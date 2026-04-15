@@ -1,0 +1,73 @@
+{
+  "name": "vscode-ai-frontend-agent",
+  "displayName": "AI Frontend Agent",
+  "description": "AI Frontend Agent UI for VS Code",
+  "version": "0.0.1",
+  "publisher": "local",
+  "engines": {
+    "node": ">=24.14.1",
+    "vscode": "^1.95.0"
+  },
+  "main": "./out/extension.js",
+  "activationEvents": [],
+  "contributes": {
+    "viewsContainers": {
+      "activitybar": [
+        {
+          "id": "aiFrontendAgent",
+          "title": "AI Frontend Agent",
+          "icon": "media/icon.svg"
+        }
+      ]
+    },
+    "views": {
+      "aiFrontendAgent": [
+        {
+          "type": "webview",
+          "id": "aiFrontendAgent.sidebarView",
+          "name": "Agent"
+        }
+      ]
+    },
+    "commands": [
+      {
+        "command": "aiFrontendAgent.openPanel",
+        "title": "AI Frontend Agent: Open in Tab"
+      }
+    ],
+    "menus": {
+      "view/title": [
+        {
+          "command": "aiFrontendAgent.openPanel",
+          "when": "view == aiFrontendAgent.sidebarView",
+          "group": "navigation"
+        }
+      ]
+    }
+  },
+  "scripts": {
+    "vscode:prepublish": "npm run build",
+    "build": "npm run build:ext && npm run build:webview",
+    "build:ext": "tsc -p tsconfig.extension.json",
+    "build:webview": "esbuild src/webview/index.tsx --bundle --format=iife --outfile=out/webview/main.js --loader:.tsx=tsx --jsx=automatic --minify",
+    "watch": "npm-run-all -p watch:ext watch:webview",
+    "watch:ext": "tsc -p tsconfig.extension.json -w",
+    "watch:webview": "esbuild src/webview/index.tsx --bundle --format=iife --outfile=out/webview/main.js --loader:.tsx=tsx --jsx=automatic --watch",
+    "format": "prettier --write .",
+    "format:check": "prettier --check ."
+  },
+  "dependencies": {
+    "react": "19.2.5",
+    "react-dom": "19.2.5"
+  },
+  "devDependencies": {
+    "@types/node": "^24.0.0",
+    "@types/react": "^19.2.0",
+    "@types/react-dom": "^19.2.0",
+    "@types/vscode": "^1.95.0",
+    "esbuild": "^0.24.0",
+    "npm-run-all": "^4.1.5",
+    "prettier": "^3.8.3",
+    "typescript": "^6.0.0"
+  }
+}

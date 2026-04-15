@@ -1,0 +1,30 @@
+body {
+  font-family: var(--vscode-font-family);
+  color: var(--vscode-foreground);
+  background: var(--vscode-editor-background);
+  padding: 12px;
+}
+
+.app h1 {
+  font-size: 14px;
+  margin: 0 0 8px;
+}
+
+button {
+  background: var(--vscode-button-background);
+  color: var(--vscode-button-foreground);
+  border: none;
+  padding: 6px 10px;
+  cursor: pointer;
+}
+
+button:hover {
+  background: var(--vscode-button-hoverBackground);
+}
+
+pre {
+  margin-top: 12px;
+  white-space: pre-wrap;
+  font-size: 11px;
+  opacity: 0.8;
+}
