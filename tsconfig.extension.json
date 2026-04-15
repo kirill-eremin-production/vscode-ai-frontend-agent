@@ -2,12 +2,13 @@
   "compilerOptions": {
     "module": "commonjs",
     "target": "ES2023",
-    "outDir": "out",
     "lib": ["ES2023"],
-    "sourceMap": true,
-    "rootDir": "src",
     "strict": true,
-    "skipLibCheck": true
+    "skipLibCheck": true,
+    "noEmit": true,
+    "paths": {
+      "@ext/*": ["./src/extension/*"]
+    }
   },
-  "include": ["src/extension.ts"]
+  "include": ["src/extension/**/*.ts"]
 }

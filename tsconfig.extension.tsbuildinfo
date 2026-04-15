@@ -1,0 +1,1 @@
+{"root":["./src/extension/index.ts","./src/extension/providers/agent-panel.ts","./src/extension/providers/sidebar-view.ts","./src/extension/shared/nonce.ts","./src/extension/webview/html.ts"],"version":"6.0.2"}

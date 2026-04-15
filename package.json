@@ -13,7 +13,7 @@
     "node": ">=24.14.1",
     "vscode": "^1.95.0"
   },
-  "main": "./out/extension.js",
+  "main": "./out/extension/index.js",
   "activationEvents": [],
   "contributes": {
     "viewsContainers": {
@@ -53,11 +53,11 @@
   "scripts": {
     "vscode:prepublish": "npm run build",
     "build": "npm run build:ext && npm run build:webview",
-    "build:ext": "tsc -p tsconfig.extension.json",
-    "build:webview": "esbuild src/webview/index.tsx --bundle --format=iife --outfile=out/webview/main.js --loader:.tsx=tsx --jsx=automatic --minify",
+    "build:ext": "tsc -p tsconfig.extension.json && esbuild src/extension/index.ts --bundle --platform=node --format=cjs --target=node20 --outfile=out/extension/index.js --external:vscode --tsconfig=tsconfig.extension.json --minify",
+    "build:webview": "esbuild src/webview/app/index.tsx --bundle --format=iife --outfile=out/webview/main.js --loader:.tsx=tsx --jsx=automatic --minify --tsconfig=tsconfig.webview.json",
     "watch": "npm-run-all -p watch:ext watch:webview",
-    "watch:ext": "tsc -p tsconfig.extension.json -w",
-    "watch:webview": "esbuild src/webview/index.tsx --bundle --format=iife --outfile=out/webview/main.js --loader:.tsx=tsx --jsx=automatic --watch",
+    "watch:ext": "esbuild src/extension/index.ts --bundle --platform=node --format=cjs --target=node20 --outfile=out/extension/index.js --external:vscode --tsconfig=tsconfig.extension.json --sourcemap --watch",
+    "watch:webview": "esbuild src/webview/app/index.tsx --bundle --format=iife --outfile=out/webview/main.js --loader:.tsx=tsx --jsx=automatic --watch --tsconfig=tsconfig.webview.json",
     "format": "prettier --write .",
     "format:check": "prettier --check .",
     "lint": "eslint .",
@@ -89,6 +89,8 @@
     "esbuild": "^0.28.0",
     "eslint": "^9.39.4",
     "eslint-config-prettier": "^10.1.8",
+    "eslint-import-resolver-typescript": "^4.4.4",
+    "eslint-plugin-boundaries": "^6.0.2",
     "eslint-plugin-react": "^7.37.5",
     "eslint-plugin-react-hooks": "^7.0.1",
     "globals": "^17.5.0",
