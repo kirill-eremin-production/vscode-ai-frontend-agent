@@ -1,0 +1,17 @@
+.vscode/**
+.vscode-test/**
+src/**
+node_modules/**
+.husky/**
+.git/**
+.gitignore
+.nvmrc
+.prettierrc*
+.prettierignore
+eslint.config.mjs
+tsconfig*.json
+AGENT.md
+*.vsix
+**/*.map
+**/*.ts
+!out/**/*.js
