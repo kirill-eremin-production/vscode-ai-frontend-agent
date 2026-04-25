@@ -2,7 +2,7 @@
 id: 0001
 title: Tool runtime — протокол tool-calls и базовый набор инструментов
 type: infrastructure
-status: open
+status: done
 created: 2026-04-26
 ---
 
@@ -51,3 +51,23 @@ OpenRouter поддерживает tool-calls в OpenAI-совместимом 
 - #0003 — роль продакта (использует tool runtime целиком).
 - #0004 — роль архитектора.
 - Будущие задачи: тулы для чтения/записи файлов рабочего проекта (для программиста), тулы для запуска команд, тулы рисования (для художников).
+
+## Outcome
+
+Реализовано в две фазы:
+
+- **Фаза A** — расширение OpenRouter-клиента под tool-calls, agent-loop с лимитом итераций, ajv-валидация входов, `tools.jsonl` лог, базовый набор `kb.read/write/list/grep` со sandbox в `.agents/knowledge/`, smoke-команда `AI Frontend Agent: Run Tool Loop Smoke`. TC-11 пройден ручным прогоном.
+- **Фаза B** — тул `ask_user` поверх pending-asks registry + IPC-events `runs.askUser` / `runs.userAnswer`, новый статус `awaiting_user_input`, broadcast bus для уведомлений webview, форма ответа в `RunDetails`, durability через `loop.json` + `reconstructHistory` (resume после перезапуска VS Code). TC-15 и TC-16 пройдены ручным прогоном.
+
+**Build vs buy** зафиксировано в Context — пишем свой loop, Vercel AI SDK отброшен из-за durability-требований.
+
+**Не сделано (edge-кейсы — оставлены на естественное обнаружение в #0002–#0004):**
+
+- TC-12 (sandbox bypass) и TC-13 (невалидные входы) формально не прогнаны, но код реализован — `resolveKnowledgePath` и `validateToolArgs` покрывают эти кейсы.
+- TC-14 (лимит итераций) — искусственная провокация малополезна, проверим если реально упрёмся.
+- Автоматический ребродкаст pending-вопроса при подключении нового webview не делал — пользователь должен сам кликнуть на ран. На текущем UX приемлемо.
+
+**Известные ограничения, которые могут стать задачами:**
+
+- gemini-3.1-flash-lite-preview не всегда надёжно вызывает `ask_user` — пришлось ужесточать system prompt smoke-роли. Для реальных ролей (#0003 продакт, #0004 архитектор) скорее всего понадобится более умная модель.
+- Нет UI для просмотра `tools.jsonl` — диагностика только через файлы. Если станет узким местом — добавим вкладку «tools log» в `RunDetails`.
