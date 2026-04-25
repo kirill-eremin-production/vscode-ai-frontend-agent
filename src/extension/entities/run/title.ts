@@ -65,7 +65,10 @@ export async function generateTitle(apiKey: string, prompt: string): Promise<str
 
     // Чистим от того, что модель всё-таки иногда добавляет вопреки
     // инструкции: окружающие кавычки, переносы строк, финальные точки.
-    const cleaned = response.content
+    // Title-роль не использует тулы, поэтому ожидаем чистый текстовый
+    // ответ — `content` гарантированно не null в этой ветке.
+    const raw = response.message.content ?? '';
+    const cleaned = raw
       .trim()
       .replace(/^["'«»]+|["'«»]+$/g, '')
       .replace(/[.\s]+$/g, '')

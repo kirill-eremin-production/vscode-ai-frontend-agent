@@ -20,8 +20,10 @@ import type { ChatMessage, RunMeta } from './types';
  */
 const ROOT_DIR_NAME = '.agents';
 const RUNS_DIR_NAME = 'runs';
+const KNOWLEDGE_DIR_NAME = 'knowledge';
 const META_FILE = 'meta.json';
 const CHAT_FILE = 'chat.jsonl';
+const TOOLS_FILE = 'tools.jsonl';
 
 /**
  * Кастомная ошибка хранилища. Выкидывается в случаях, когда дальнейшая
@@ -63,6 +65,38 @@ function getRunsRoot(): string {
 /** Полный путь до папки конкретного рана. */
 function getRunDir(runId: string): string {
   return path.join(getRunsRoot(), runId);
+}
+
+/**
+ * Корень knowledge base всех ролей. Используется тулами `kb.*` через
+ * хелпер `resolveKnowledgePath` — отдаёт абсолютный путь и на нём же
+ * проверяется sandbox (никакого `..` за пределы этой директории).
+ */
+export function getKnowledgeRoot(): string {
+  return path.join(getWorkspaceRoot(), ROOT_DIR_NAME, KNOWLEDGE_DIR_NAME);
+}
+
+/**
+ * Резолвить путь внутри knowledge base и проверить sandbox.
+ * Возвращает абсолютный путь, гарантированно лежащий внутри
+ * `.agents/knowledge/`. Бросает `RunStorageError` при попытке
+ * выйти за пределы (через `..`, абсолютный путь и т.п.).
+ *
+ * @param relativePath относительный путь от корня knowledge.
+ *                     Может содержать поддиректории через `/`.
+ */
+export function resolveKnowledgePath(relativePath: string): string {
+  const root = getKnowledgeRoot();
+  // path.resolve нормализует `..` и абсолютные пути; затем явно проверяем,
+  // что результат начинается с `root` + sep — это и есть sandbox-проверка.
+  const resolved = path.resolve(root, relativePath);
+  const rootWithSep = root.endsWith(path.sep) ? root : root + path.sep;
+  if (resolved !== root && !resolved.startsWith(rootWithSep)) {
+    throw new RunStorageError(
+      `Путь "${relativePath}" выходит за пределы .agents/knowledge/ — sandbox запрещён`
+    );
+  }
+  return resolved;
 }
 
 /**
@@ -145,6 +179,82 @@ export async function appendChatMessage(runId: string, message: ChatMessage): Pr
   // \n в конце обязателен — иначе следующая запись склеится с этой
   // и сломает построчный парсинг.
   await fs.appendFile(filePath, JSON.stringify(message) + '\n', 'utf8');
+}
+
+/**
+ * Запись tool-события: один шаг agent-loop'а. Append-only лог в
+ * `tools.jsonl`. Дискриминированный union по `kind` — проще как
+ * расширять новыми типами событий, так и парсить.
+ *
+ * Это «полный» лог, в отличие от `chat.jsonl` — туда дублируются
+ * только финальные assistant-ответы и сообщения от/к пользователю.
+ */
+export type ToolEvent =
+  | {
+      kind: 'assistant';
+      at: string;
+      /** Текст ответа модели (может быть null, если только tool_calls). */
+      content: string | null;
+      /** Сырой массив tool_calls, как пришёл от провайдера. */
+      tool_calls?: Array<{
+        id: string;
+        name: string;
+        /** JSON-строка аргументов — храним как есть, без парсинга. */
+        arguments: string;
+      }>;
+    }
+  | {
+      kind: 'tool_result';
+      at: string;
+      /** id из tool_call, к которому привязан результат. */
+      tool_call_id: string;
+      /** Имя тула — дублируем для удобства чтения лога. */
+      tool_name: string;
+      /** Результат тула (успех) — произвольный JSON-сериализуемый объект. */
+      result?: unknown;
+      /** Ошибка тула (валидация, sandbox, исключение в handler). */
+      error?: string;
+    }
+  | {
+      kind: 'system';
+      at: string;
+      /** Текст диагностики: лимит итераций, фатальная ошибка цикла и т.п. */
+      message: string;
+    };
+
+/**
+ * Дописать одно tool-событие в tools.jsonl. Полный аналог
+ * `appendChatMessage`, но для отдельного, технического лога agent-loop'а.
+ */
+export async function appendToolEvent(runId: string, event: ToolEvent): Promise<void> {
+  const filePath = path.join(getRunDir(runId), TOOLS_FILE);
+  await fs.appendFile(filePath, JSON.stringify(event) + '\n', 'utf8');
+}
+
+/**
+ * Прочитать все tool-события рана. Нужно для resume (восстановление
+ * pending `ask_user` после перезапуска VS Code) и для будущей UI
+ * вкладки «tools log». Битые строки пропускаем, как в `readChat`.
+ */
+export async function readToolEvents(runId: string): Promise<ToolEvent[]> {
+  const filePath = path.join(getRunDir(runId), TOOLS_FILE);
+  let raw: string;
+  try {
+    raw = await fs.readFile(filePath, 'utf8');
+  } catch {
+    return [];
+  }
+  const lines = raw.split('\n');
+  const events: ToolEvent[] = [];
+  for (const line of lines) {
+    if (line.trim().length === 0) continue;
+    try {
+      events.push(JSON.parse(line) as ToolEvent);
+    } catch {
+      // Битая строка — пропускаем.
+    }
+  }
+  return events;
 }
 
 /**

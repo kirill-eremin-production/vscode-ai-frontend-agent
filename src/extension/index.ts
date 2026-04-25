@@ -2,6 +2,7 @@ import * as vscode from 'vscode';
 import { AgentPanel } from '@ext/providers/agent-panel';
 import { AgentSidebarViewProvider } from '@ext/providers/sidebar-view';
 import { promptForOpenRouterKey } from '@ext/shared/secrets/openrouter-key';
+import { registerToolLoopSmokeCommand } from '@ext/features/tool-loop-smoke/command';
 
 /**
  * Точка входа extension host.
@@ -46,6 +47,11 @@ export function activate(context: vscode.ExtensionContext) {
       }
     })
   );
+
+  // Временная диагностическая команда для ручной проверки tool runtime
+  // (Фаза A задачи #0001). Удалим/перепрофилируем, когда появятся
+  // полноценные роли с собственными FSM-переходами.
+  context.subscriptions.push(registerToolLoopSmokeCommand(context));
 }
 
 /**

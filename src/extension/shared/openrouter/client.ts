@@ -9,6 +9,11 @@
  * Без стриминга: первая итерация мульти-агентной системы должна
  * собираться предельно дёшево. Стриминг добавим, когда длинные
  * ответы ролей начнут реально мешать UX.
+ *
+ * Поддерживает tool-calls в OpenAI-совместимом формате (используется
+ * agent-loop): запрос принимает массив `tools`, ответ возвращает
+ * `tool_calls` от модели; сообщения с `role: "tool"` подаются обратно
+ * на следующей итерации цикла.
  */
 
 /** Идентификатор API OpenRouter — литералом, чтобы было видно в логах. */
@@ -24,13 +29,62 @@ const APP_REFERER = 'https://github.com/kirill-eremin-production/vscode-ai-front
 const APP_TITLE = 'AI Frontend Agent (VS Code)';
 
 /**
- * Сообщение в формате OpenAI/OpenRouter Chat Completions.
- * Используем минимально необходимое подмножество ролей —
- * tool-calls и vision добавим, когда дойдём до соответствующих ролей.
+ * Один tool_call от модели в ответе assistant'а. Структура повторяет
+ * формат OpenAI/OpenRouter: `id` нужен, чтобы привязать tool_result
+ * обратно к этому вызову; `arguments` — JSON-строка (не объект),
+ * это особенность протокола, мы парсим её на стороне agent-loop.
  */
-export interface ChatMessage {
-  role: 'system' | 'user' | 'assistant';
-  content: string;
+export interface ToolCall {
+  /** Идентификатор вызова, генерируется моделью. */
+  id: string;
+  /** Сейчас всегда `'function'` — других типов tool-call в API нет. */
+  type: 'function';
+  function: {
+    /** Имя тула, которое модель решила вызвать. */
+    name: string;
+    /** Аргументы тула в виде JSON-строки. Парсим уже в agent-loop. */
+    arguments: string;
+  };
+}
+
+/**
+ * Сообщение в формате OpenAI/OpenRouter Chat Completions.
+ *
+ * Дискриминированное по `role`: разные роли несут разные обязательные
+ * поля (например, у `tool` есть `tool_call_id`, у `assistant` —
+ * опциональные `tool_calls`). Так мы ловим разъезд формата на этапе
+ * компиляции, а не в рантайме.
+ */
+export type ChatMessage =
+  | { role: 'system'; content: string }
+  | { role: 'user'; content: string }
+  | {
+      role: 'assistant';
+      /** content может быть `null`, когда модель вызвала только тулы. */
+      content: string | null;
+      tool_calls?: ToolCall[];
+    }
+  | {
+      role: 'tool';
+      /** Привязка к конкретному tool_call.id из предыдущего assistant'а. */
+      tool_call_id: string;
+      /** Результат тула — обычно JSON-строка с полем `result` или `error`. */
+      content: string;
+    };
+
+/**
+ * Описание тула в формате, который ожидает OpenRouter в поле `tools`
+ * запроса. Совпадает с OpenAI tool definition: `parameters` —
+ * JSON Schema аргументов.
+ */
+export interface ToolDefinitionWire {
+  type: 'function';
+  function: {
+    name: string;
+    description: string;
+    /** JSON Schema аргументов. Здесь — `unknown`, чтобы не плодить генерики. */
+    parameters: Record<string, unknown>;
+  };
 }
 
 /** Параметры одного синхронного запроса в OpenRouter. */
@@ -43,14 +97,26 @@ export interface ChatRequest {
   maxTokens?: number;
   /** Температура (0..2). Не задаём дефолт — пусть сама модель решает. */
   temperature?: number;
+  /** Список доступных моделей тулов. Пустой/undefined = чистый chat. */
+  tools?: ToolDefinitionWire[];
 }
 
-/** Результат успешного запроса — только то, что мы реально потребляем. */
+/**
+ * Результат успешного запроса — только то, что мы реально потребляем.
+ * Возвращаем сразу assistant-сообщение целиком (а не голый content),
+ * потому что для tool-loop нужны и `content`, и `tool_calls`.
+ */
 export interface ChatResponse {
-  /** Финальный текст ответа модели. */
-  content: string;
+  /** Сообщение assistant'а — уже в формате `ChatMessage`, готово к подаче обратно. */
+  message: Extract<ChatMessage, { role: 'assistant' }>;
   /** Какая модель фактически ответила (OpenRouter может подменять). */
   model: string;
+  /**
+   * Причина остановки модели. `'stop'` — финальный ответ; `'tool_calls'` —
+   * модель ждёт результаты тулов и продолжит после них; `'length'` —
+   * упёрлись в `maxTokens`.
+   */
+  finishReason: 'stop' | 'tool_calls' | 'length' | 'content_filter' | string;
   /** Использование токенов, если провайдер вернул эту информацию. */
   usage?: {
     promptTokens: number;
@@ -119,6 +185,7 @@ export async function chat(apiKey: string, request: ChatRequest): Promise<ChatRe
   };
   if (request.maxTokens !== undefined) body.max_tokens = request.maxTokens;
   if (request.temperature !== undefined) body.temperature = request.temperature;
+  if (request.tools !== undefined && request.tools.length > 0) body.tools = request.tools;
 
   let lastError: OpenRouterError | undefined;
 
@@ -152,7 +219,14 @@ export async function chat(apiKey: string, request: ChatRequest): Promise<ChatRe
       // с OpenAI Chat Completions, поэтому достаём `choices[0]`.
       const data = (await response.json()) as {
         model?: string;
-        choices?: Array<{ message?: { content?: string } }>;
+        choices?: Array<{
+          message?: {
+            role?: string;
+            content?: string | null;
+            tool_calls?: ToolCall[];
+          };
+          finish_reason?: string;
+        }>;
         usage?: {
           prompt_tokens?: number;
           completion_tokens?: number;
@@ -160,16 +234,28 @@ export async function chat(apiKey: string, request: ChatRequest): Promise<ChatRe
         };
       };
 
-      const content = data.choices?.[0]?.message?.content ?? '';
-      // Пустой content формально валиден (модель может вернуть ""),
-      // но это почти всегда симптом ошибки — лучше явно просигналить.
-      if (!content) {
-        throw new OpenRouterError('OpenRouter returned empty content', response.status);
+      const choice = data.choices?.[0];
+      const rawMessage = choice?.message;
+      const finishReason = choice?.finish_reason ?? 'stop';
+      const content = rawMessage?.content ?? null;
+      const toolCalls = rawMessage?.tool_calls;
+
+      // Если нет ни текста, ни tool_calls — модель явно сломалась.
+      // Лучше явно просигналить, чем тихо вернуть пустой ответ.
+      if ((content === null || content === '') && (!toolCalls || toolCalls.length === 0)) {
+        throw new OpenRouterError('OpenRouter returned empty assistant message', response.status);
       }
 
+      const message: Extract<ChatMessage, { role: 'assistant' }> = {
+        role: 'assistant',
+        content: content,
+        ...(toolCalls && toolCalls.length > 0 ? { tool_calls: toolCalls } : {}),
+      };
+
       return {
-        content,
+        message,
         model: data.model ?? request.model,
+        finishReason,
         usage: data.usage
           ? {
               promptTokens: data.usage.prompt_tokens ?? 0,
