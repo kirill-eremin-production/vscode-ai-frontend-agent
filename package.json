@@ -38,6 +38,10 @@
       {
         "command": "aiFrontendAgent.openPanel",
         "title": "AI Frontend Agent: Open in Tab"
+      },
+      {
+        "command": "aiFrontendAgent.setOpenRouterKey",
+        "title": "AI Frontend Agent: Set OpenRouter API Key"
       }
     ],
     "menus": {
@@ -81,7 +85,7 @@
   },
   "devDependencies": {
     "@eslint/js": "^9.39.4",
-    "@types/node": "^24.0.0",
+    "@types/node": "^24.12.2",
     "@types/react": "^19.2.0",
     "@types/react-dom": "^19.2.0",
     "@types/vscode": "^1.95.0",

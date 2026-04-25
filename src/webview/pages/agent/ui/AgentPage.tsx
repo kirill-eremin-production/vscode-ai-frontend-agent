@@ -1,28 +1,38 @@
-import { MessageLog } from '@features/message-log';
 import { OpenInTabButton } from '@features/open-in-tab';
-import { PingButton } from '@features/ping-extension';
+import { RunCreateForm } from '@features/run-create';
+import { RunDetails, RunList } from '@features/run-list';
 
 /**
- * Главная (и пока единственная) страница webview-агента.
+ * Главная страница webview-агента.
  *
  * По FSD страница — это композиция фич и виджетов в готовый layout.
- * Она НЕ должна содержать собственной бизнес-логики, не должна знать
- * о внутреннем устройстве фич и не должна напрямую звать VS Code API.
- * Если страница начинает «думать» — это сигнал, что логику пора
- * вынести в новую фичу или в `model/` существующей.
+ * Она НЕ должна содержать собственной бизнес-логики и не должна
+ * напрямую звать VS Code API. Если страница начинает «думать» —
+ * это сигнал, что логику пора вынести в новую фичу или в `model/`
+ * существующей.
  *
- * Структура намеренно тривиальная: заголовок + кнопки + журнал.
- * Дальнейшее усложнение (роутинг, табы, сайдбары) делается ровно
- * здесь — добавлением виджетов или подстраниц, а не разрастанием фич.
+ * Layout: сверху — заголовок и кнопка «Open in tab», ниже —
+ * двухколоночная зона: слева список ранов и форма создания,
+ * справа — детали выбранного. Список и форма находятся в одной
+ * колонке, потому что начало работы пользователя естественнее
+ * читается сверху вниз: «вот мои раны» → «начать новый».
  */
 export function AgentPage() {
   return (
     <main className="app">
-      <h1>AI Frontend Agent</h1>
-      <p>React 19 scaffold готов. Дальше — собственный UI агента.</p>
-      <PingButton />
-      <OpenInTabButton />
-      <MessageLog />
+      <header className="app__header">
+        <h1>AI Frontend Agent</h1>
+        <OpenInTabButton />
+      </header>
+      <div className="app__layout">
+        <aside className="app__sidebar">
+          <RunCreateForm />
+          <RunList />
+        </aside>
+        <section className="app__main">
+          <RunDetails />
+        </section>
+      </div>
     </main>
   );
 }

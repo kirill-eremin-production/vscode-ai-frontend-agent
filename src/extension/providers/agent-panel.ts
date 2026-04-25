@@ -1,5 +1,6 @@
 import * as vscode from 'vscode';
 import { buildWebviewHtml, buildWebviewOptions } from '@ext/webview/html';
+import { wireRunMessages } from '@ext/features/run-management/wire';
 
 /**
  * Полноценная webview-панель агента, открывающаяся как обычная
@@ -29,7 +30,7 @@ export class AgentPanel {
    * Сам конструктор приватный, чтобы извне нельзя было создать
    * вторую копию в обход singleton-логики.
    */
-  public static createOrShow(extensionUri: vscode.Uri) {
+  public static createOrShow(context: vscode.ExtensionContext) {
     // Открываем в той же колонке, где сейчас активный редактор —
     // это меньше всего ломает пользовательский layout.
     const column = vscode.window.activeTextEditor?.viewColumn ?? vscode.ViewColumn.One;
@@ -43,33 +44,37 @@ export class AgentPanel {
       AgentPanel.viewType,
       'AI Frontend Agent',
       column,
-      { ...buildWebviewOptions(extensionUri), retainContextWhenHidden: true }
+      { ...buildWebviewOptions(context.extensionUri), retainContextWhenHidden: true }
     );
 
-    AgentPanel.current = new AgentPanel(panel, extensionUri);
+    AgentPanel.current = new AgentPanel(panel, context);
   }
 
   private constructor(
     private readonly panel: vscode.WebviewPanel,
-    extensionUri: vscode.Uri
+    context: vscode.ExtensionContext
   ) {
-    panel.webview.html = buildWebviewHtml(panel.webview, extensionUri);
+    panel.webview.html = buildWebviewHtml(panel.webview, context.extensionUri);
 
-    // Маршрутизация сообщений от webview — зеркалит логику
-    // sidebar-провайдера, но `openInTab` здесь означает «просто
-    // сфокусировать уже открытую панель», а не «открыть новую».
-    panel.webview.onDidReceiveMessage((msg) => {
-      if (msg?.type === 'ping') {
-        panel.webview.postMessage({ type: 'pong', at: Date.now() });
-      } else if (msg?.type === 'openInTab') {
+    // Локальный обработчик: `openInTab` из webview означает
+    // «сфокусировать уже открытую панель», а не «открыть новую».
+    // Остальные типы сообщений ловит wireRunMessages ниже.
+    const localHandler = panel.webview.onDidReceiveMessage((msg) => {
+      if (msg?.type === 'openInTab') {
         panel.reveal();
       }
     });
 
-    // Очищаем singleton, когда пользователь закрывает вкладку,
-    // иначе следующий `createOrShow` попытается сфокусировать
-    // уже уничтоженный webview.
+    // Общий обработчик ранов — тот же, что и у sidebar. Поведение
+    // должно быть идентичным независимо от того, где открыт webview.
+    const runsHandler = wireRunMessages(context, panel.webview);
+
+    // Очищаем singleton и подписки, когда пользователь закрывает вкладку,
+    // иначе следующий `createOrShow` попытается сфокусировать уже
+    // уничтоженный webview, а слушатели будут висеть в памяти.
     panel.onDidDispose(() => {
+      localHandler.dispose();
+      runsHandler.dispose();
       AgentPanel.current = undefined;
     });
   }
