@@ -41,11 +41,27 @@ export interface ToolDefinition<TArgs = unknown> {
    * agent-loop поймает и положит в `tool_result.error` для модели,
    * не уронит цикл целиком.
    *
+   * `context` несёт runId текущего рана и `toolCallId` именно этого
+   * вызова — нужен `ask_user`, чтобы зарегистрировать pending под
+   * правильным ключом и сослаться на ран в IPC-сообщении. kb-тулы
+   * этот контекст не используют — TypeScript разрешает игнорировать.
+   *
    * Для `ask_user` — это особенный handler: вместо синхронного
    * результата он возвращает Promise, который резолвится после
-   * ответа пользователя через IPC (см. Фазу B).
+   * ответа пользователя через IPC.
    */
-  handler: (args: TArgs) => Promise<unknown>;
+  handler: (args: TArgs, context: ToolHandlerContext) => Promise<unknown>;
+}
+
+/** Контекст вызова handler'а тула. Передаётся agent-loop'ом. */
+export interface ToolHandlerContext {
+  /** id рана — на чьём диске пишется лог и чей статус меняется. */
+  runId: string;
+  /**
+   * id данного tool_call'а из ответа модели — нужен для привязки
+   * pending-promise'а в `ask_user`.
+   */
+  toolCallId: string;
 }
 
 /**

@@ -1,6 +1,6 @@
 import { useEffect, useSyncExternalStore } from 'react';
 import { vscode } from '@shared/api/vscode';
-import type { ChatMessage, RunMeta } from './types';
+import type { ChatMessage, PendingAsk, RunMeta } from './types';
 
 /**
  * Простой in-memory store ранов для webview.
@@ -16,19 +16,27 @@ import type { ChatMessage, RunMeta } from './types';
  * Содержимое состояния:
  *  - `runs` — список метаданных всех ранов (отрисовывает run-list);
  *  - `selectedId` — id текущего открытого рана;
- *  - `selectedDetails` — meta + chat выбранного, если уже подгружены.
+ *  - `selectedDetails` — meta + chat выбранного, если уже подгружены;
+ *  - `pendingAsk` — текущий вопрос от агента к пользователю по выбранному
+ *    рану (если ран в `awaiting_user_input`);
+ *  - `pendingByRun` — кэш «ран → актуальный pendingAsk» для подсветки
+ *    в списке. Заполняется при `runs.askUser` broadcast'ах.
  */
 
 interface RunsState {
   runs: RunMeta[];
   selectedId: string | undefined;
   selectedDetails: { meta: RunMeta; chat: ChatMessage[] } | undefined;
+  pendingAsk: PendingAsk | undefined;
+  pendingByRun: Record<string, PendingAsk>;
 }
 
 const initialState: RunsState = {
   runs: [],
   selectedId: undefined,
   selectedDetails: undefined,
+  pendingAsk: undefined,
+  pendingByRun: {},
 };
 
 /**
@@ -68,7 +76,8 @@ type WebviewToExtensionMessage =
   | { type: 'runs.create'; prompt: string }
   | { type: 'runs.list' }
   | { type: 'runs.get'; id: string }
-  | { type: 'runs.setApiKey' };
+  | { type: 'runs.setApiKey' }
+  | { type: 'runs.userAnswer'; runId: string; askId: string; answer: string };
 
 function send(msg: WebviewToExtensionMessage): void {
   vscode.postMessage(msg);
@@ -93,8 +102,34 @@ export function setApiKey(): void {
 export function selectRun(id: string): void {
   // Сначала обновляем выбор локально — UI реагирует мгновенно,
   // даже до прихода `runs.get.result`.
-  setState((prev) => ({ ...prev, selectedId: id, selectedDetails: undefined }));
+  setState((prev) => ({
+    ...prev,
+    selectedId: id,
+    selectedDetails: undefined,
+    // pendingAsk сразу подтягиваем из кэша, если уже знаем — снимет
+    // мерцание «вопрос → нет вопроса → вопрос» при переключении.
+    pendingAsk: prev.pendingByRun[id],
+  }));
   send({ type: 'runs.get', id });
+}
+
+/**
+ * Отправить ответ пользователя на pending `ask_user`. Локально сразу
+ * убираем `pendingAsk` из state — UI закрывает форму, не дожидаясь
+ * подтверждения от extension. Если что-то пойдёт не так, `runs.askUser`
+ * прилетит снова и форма вернётся.
+ */
+export function answerAsk(runId: string, askId: string, answer: string): void {
+  setState((prev) => {
+    const nextByRun = { ...prev.pendingByRun };
+    delete nextByRun[runId];
+    return {
+      ...prev,
+      pendingAsk: prev.selectedId === runId ? undefined : prev.pendingAsk,
+      pendingByRun: nextByRun,
+    };
+  });
+  send({ type: 'runs.userAnswer', runId, askId, answer });
 }
 
 /* ── Приём сообщений из extension ───────────────────────────────── */
@@ -107,9 +142,18 @@ export function selectRun(id: string): void {
  */
 type ExtensionToWebviewMessage =
   | { type: 'runs.list.result'; runs: RunMeta[] }
-  | { type: 'runs.get.result'; id: string; meta?: RunMeta; chat?: ChatMessage[] }
+  | {
+      type: 'runs.get.result';
+      id: string;
+      meta?: RunMeta;
+      chat?: ChatMessage[];
+      pendingAsk?: PendingAsk;
+    }
   | { type: 'runs.created'; meta: RunMeta }
-  | { type: 'runs.error'; message: string };
+  | { type: 'runs.error'; message: string }
+  | { type: 'runs.updated'; meta: RunMeta }
+  | { type: 'runs.askUser'; runId: string; ask: PendingAsk }
+  | { type: 'runs.message.appended'; runId: string; message: ChatMessage };
 
 /**
  * Хук-подписчик, который должен быть установлен ровно один раз на
@@ -143,6 +187,7 @@ export function useRunsWiring(): void {
             runs: [data.meta, ...prev.runs.filter((r) => r.id !== data.meta.id)],
             selectedId: data.meta.id,
             selectedDetails: { meta: data.meta, chat: [] },
+            pendingAsk: undefined,
           }));
           return;
         }
@@ -152,11 +197,65 @@ export function useRunsWiring(): void {
           setState((prev) => {
             if (prev.selectedId !== data.id) return prev;
             if (!data.meta) {
-              return { ...prev, selectedDetails: undefined };
+              return { ...prev, selectedDetails: undefined, pendingAsk: undefined };
             }
             return {
               ...prev,
               selectedDetails: { meta: data.meta, chat: data.chat ?? [] },
+              pendingAsk: data.pendingAsk,
+            };
+          });
+          return;
+        }
+        case 'runs.updated': {
+          setState((prev) => {
+            const runs = prev.runs.map((r) => (r.id === data.meta.id ? data.meta : r));
+            // Если меняется выбранный ран — обновляем и meta в деталях,
+            // chat не трогаем (он догонится отдельным сообщением).
+            const selectedDetails =
+              prev.selectedId === data.meta.id && prev.selectedDetails
+                ? { ...prev.selectedDetails, meta: data.meta }
+                : prev.selectedDetails;
+            // Если ран ушёл из awaiting_user_input — снимаем pendingAsk.
+            const clearPending = data.meta.status !== 'awaiting_user_input';
+            const pendingByRun = { ...prev.pendingByRun };
+            if (clearPending) delete pendingByRun[data.meta.id];
+            return {
+              ...prev,
+              runs,
+              selectedDetails,
+              pendingAsk:
+                clearPending && prev.selectedId === data.meta.id ? undefined : prev.pendingAsk,
+              pendingByRun,
+            };
+          });
+          return;
+        }
+        case 'runs.askUser': {
+          setState((prev) => ({
+            ...prev,
+            pendingByRun: { ...prev.pendingByRun, [data.runId]: data.ask },
+            pendingAsk: prev.selectedId === data.runId ? data.ask : prev.pendingAsk,
+          }));
+          return;
+        }
+        case 'runs.message.appended': {
+          setState((prev) => {
+            // Добавляем сообщение в ленту только если открыт этот ран.
+            // В будущем можно показывать «новый ответ» в списке слева.
+            if (
+              prev.selectedId !== data.runId ||
+              !prev.selectedDetails ||
+              prev.selectedDetails.meta.id !== data.runId
+            ) {
+              return prev;
+            }
+            return {
+              ...prev,
+              selectedDetails: {
+                ...prev.selectedDetails,
+                chat: [...prev.selectedDetails.chat, data.message],
+              },
             };
           });
           return;

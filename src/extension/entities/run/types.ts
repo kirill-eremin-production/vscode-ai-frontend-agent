@@ -13,7 +13,24 @@
  * `draft` (создан, ещё ничего не запускалось) и `failed`, остальные —
  * заготовки на будущие итерации FSM.
  */
-export type RunStatus = 'draft' | 'running' | 'awaiting_human' | 'done' | 'failed';
+/**
+ * Возможные состояния рана.
+ * - `draft` — создан, но цикл ещё не запускался.
+ * - `running` — agent-loop активен.
+ * - `awaiting_user_input` — agent-loop остановлен на `ask_user`, ждём ответа.
+ * - `awaiting_human` — роль завершила свой шаг, ждёт approve пользователя
+ *   (не путать с `awaiting_user_input`: там вопрос изнутри цикла, тут —
+ *   контрольная точка между ролями).
+ * - `done` — финальный успех.
+ * - `failed` — фатальная ошибка цикла, продолжать нельзя.
+ */
+export type RunStatus =
+  | 'draft'
+  | 'running'
+  | 'awaiting_user_input'
+  | 'awaiting_human'
+  | 'done'
+  | 'failed';
 
 /**
  * Сообщение в общей ленте чата рана. Сейчас пишется только

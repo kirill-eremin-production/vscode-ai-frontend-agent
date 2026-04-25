@@ -9,7 +9,24 @@
  * минимальна (один файл).
  */
 
-export type RunStatus = 'draft' | 'running' | 'awaiting_human' | 'done' | 'failed';
+export type RunStatus =
+  | 'draft'
+  | 'running'
+  | 'awaiting_user_input'
+  | 'awaiting_human'
+  | 'done'
+  | 'failed';
+
+/**
+ * Описание ожидающего ответа `ask_user`. Зеркало `PendingAsk` из
+ * `src/extension/entities/run/storage.ts` (контракт IPC).
+ */
+export interface PendingAsk {
+  toolCallId: string;
+  question: string;
+  context?: string;
+  at: string;
+}
 
 export interface ChatMessage {
   id: string;

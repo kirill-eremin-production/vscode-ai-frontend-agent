@@ -1,6 +1,10 @@
 import * as vscode from 'vscode';
 import { createRun, getRunDetails, listRuns } from '@ext/entities/run/service';
+import { findPendingAsk } from '@ext/entities/run/storage';
+import { resumeRun } from '@ext/entities/run/resume-registry';
+import { resolvePendingAsk } from '@ext/shared/agent-loop';
 import { promptForOpenRouterKey } from '@ext/shared/secrets/openrouter-key';
+import { onBroadcast } from './broadcast';
 import type { ExtensionToWebviewMessage, WebviewToExtensionMessage } from './messages';
 
 /**
@@ -17,6 +21,10 @@ import type { ExtensionToWebviewMessage, WebviewToExtensionMessage } from './mes
  *  - проще отлаживать (видно в DevTools, какое сообщение какое);
  *  - один request может породить несколько событий (`created` +
  *    обновлённый `list.result`), что естественно ложится на эту схему.
+ *
+ * Помимо обработки входящих, wire подписывается на `broadcast` —
+ * исходящие события от agent-loop (статусы, askUser, новые сообщения
+ * чата) автоматически уходят во все активные webview.
  */
 export function wireRunMessages(
   context: vscode.ExtensionContext,
@@ -37,7 +45,11 @@ export function wireRunMessages(
     void vscode.window.showErrorMessage(`AI Frontend Agent: ${message}`);
   };
 
-  return webview.onDidReceiveMessage(async (raw: unknown) => {
+  // Подписка на broadcast: всё, что agent-loop / resume / роли шлют
+  // через `broadcast(...)`, прокидывается в этот webview как есть.
+  const broadcastSub = onBroadcast(send);
+
+  const messageSub = webview.onDidReceiveMessage(async (raw: unknown) => {
     // На уровне типа доверяем, но валидируем минимально: если у
     // сообщения нет строкового `type` — это либо чужой источник,
     // либо повреждённый payload. В обоих случаях молча игнорируем.
@@ -72,16 +84,40 @@ export function wireRunMessages(
         }
         case 'runs.get': {
           const details = await getRunDetails(msg.id);
+          // pendingAsk актуален только для ранов в awaiting_user_input.
+          // В других статусах не читаем tools.jsonl впустую.
+          const pendingAsk =
+            details?.meta.status === 'awaiting_user_input'
+              ? await findPendingAsk(msg.id)
+              : undefined;
           send({
             type: 'runs.get.result',
             id: msg.id,
             meta: details?.meta,
             chat: details?.chat,
+            pendingAsk,
           });
           return;
         }
         case 'runs.setApiKey': {
           await promptForOpenRouterKey(context);
+          return;
+        }
+        case 'runs.userAnswer': {
+          // Сначала пытаемся резолвить in-memory pending — это
+          // быстрый путь, когда extension host не перезапускался.
+          const resolved = resolvePendingAsk(msg.askId, msg.answer);
+          if (resolved) return;
+
+          // Иначе — pending не в памяти: либо был перезапуск VS Code,
+          // либо поздний дубликат ответа. Пытаемся возобновить из
+          // диска. resumeRun сам отчитается через broadcast.
+          await resumeRun({
+            context,
+            runId: msg.runId,
+            pendingToolCallId: msg.askId,
+            userAnswer: msg.answer,
+          });
           return;
         }
         default: {
@@ -95,4 +131,13 @@ export function wireRunMessages(
       reportError(err);
     }
   });
+
+  // Возвращаем составной Disposable: snять обе подписки одной
+  // командой (broadcast и onDidReceiveMessage).
+  return {
+    dispose: () => {
+      broadcastSub.dispose();
+      messageSub.dispose();
+    },
+  };
 }

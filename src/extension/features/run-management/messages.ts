@@ -1,4 +1,5 @@
 import type { ChatMessage, RunMeta } from '@ext/entities/run/types';
+import type { PendingAsk } from '@ext/entities/run/storage';
 
 /**
  * Контракт сообщений между webview и extension host для работы с ранами.
@@ -37,11 +38,24 @@ export interface RunsSetApiKeyRequest {
   type: 'runs.setApiKey';
 }
 
+/**
+ * Ответ пользователя на pending `ask_user`. Webview шлёт это сообщение,
+ * когда пользователь нажал «Ответить» в карточке рана. `askId` — это
+ * `tool_call_id` из последнего assistant-сообщения цикла.
+ */
+export interface RunsUserAnswerRequest {
+  type: 'runs.userAnswer';
+  runId: string;
+  askId: string;
+  answer: string;
+}
+
 export type WebviewToExtensionMessage =
   | RunsCreateRequest
   | RunsListRequest
   | RunsGetRequest
-  | RunsSetApiKeyRequest;
+  | RunsSetApiKeyRequest
+  | RunsUserAnswerRequest;
 
 /* ── Extension → Webview ─────────────────────────────────────────── */
 
@@ -57,6 +71,12 @@ export interface RunsGetResult {
   id: string;
   meta?: RunMeta;
   chat?: ChatMessage[];
+  /**
+   * Если ран висит в статусе `awaiting_user_input` — здесь приходит
+   * описание вопроса, который надо отрисовать в карточке. Webview
+   * получает его сразу при выборе рана, без отдельного round-trip'а.
+   */
+  pendingAsk?: PendingAsk;
 }
 
 /**
@@ -75,8 +95,45 @@ export interface RunsErrorEvent {
   message: string;
 }
 
+/**
+ * Уведомление об изменении статуса/метаданных рана. Шлётся при каждом
+ * `updateRunStatus` (старт цикла, остановка на ask_user, финал).
+ * Webview апдейтит и список, и карточку, если открыт этот ран.
+ */
+export interface RunsUpdatedEvent {
+  type: 'runs.updated';
+  meta: RunMeta;
+}
+
+/**
+ * Сообщение «появился новый pending-вопрос для пользователя». Шлётся,
+ * когда модель в активном цикле вызвала `ask_user`. Webview подсвечивает
+ * ран и, если он сейчас выбран, отрисовывает форму ответа.
+ *
+ * Параллельно с этим extension меняет статус рана на `awaiting_user_input`
+ * и шлёт `runs.updated` — UI показывает корректный статус.
+ */
+export interface RunsAskUserEvent {
+  type: 'runs.askUser';
+  runId: string;
+  ask: PendingAsk;
+}
+
+/**
+ * Дописали сообщение в `chat.jsonl` рана — webview добавляет его в
+ * ленту, если этот ран сейчас открыт.
+ */
+export interface RunsMessageAppendedEvent {
+  type: 'runs.message.appended';
+  runId: string;
+  message: ChatMessage;
+}
+
 export type ExtensionToWebviewMessage =
   | RunsListResult
   | RunsGetResult
   | RunsCreatedEvent
-  | RunsErrorEvent;
+  | RunsErrorEvent
+  | RunsUpdatedEvent
+  | RunsAskUserEvent
+  | RunsMessageAppendedEvent;

@@ -1,43 +1,78 @@
 import * as vscode from 'vscode';
 import * as crypto from 'node:crypto';
 import { getOpenRouterKey, promptForOpenRouterKey } from '@ext/shared/secrets/openrouter-key';
-import { runAgentLoop, kbTools, type ToolRegistry } from '@ext/shared/agent-loop';
-import { appendChatMessage, initRunDir } from '@ext/entities/run/storage';
+import {
+  runAgentLoop,
+  kbTools,
+  askUserTool,
+  reconstructHistory,
+  logResume,
+  type ToolDefinition,
+  type ToolRegistry,
+} from '@ext/shared/agent-loop';
+import {
+  appendChatMessage,
+  initRunDir,
+  updateRunStatus,
+  writeLoopConfig,
+} from '@ext/entities/run/storage';
+import { broadcast } from '@ext/features/run-management/broadcast';
+import { registerRoleResumer } from '@ext/entities/run/resume-registry';
 import type { RunMeta } from '@ext/entities/run/types';
 
 /**
- * Тестовая команда для ручной проверки tool runtime (Фаза A задачи #0001).
+ * Тестовая команда + resumer для ручной проверки tool runtime.
  *
- * Эта команда — намеренно временная: пока нет реальных ролей (продакт,
- * архитектор), нужен способ дёрнуть `runAgentLoop` руками с реальной
- * моделью и реальными kb-тулами и убедиться, что цикл живой,
- * `tools.jsonl` пишется, sandbox работает.
+ * Назначение — закрыть TC-11..16: запустить полный цикл с реальной
+ * моделью и реальными тулами (включая `ask_user`), убедиться, что
+ * `tools.jsonl` пишется, sandbox и валидация работают, durability
+ * ask_user через перезапуск VS Code тоже работает.
  *
- * Когда роли появятся, команду можно либо удалить, либо оставить как
- * «диагностический ран» — решим в Фазе B/C.
+ * Когда появятся реальные роли (продакт, архитектор) — команду
+ * можно либо удалить, либо оставить как «диагностический ран».
  */
 
+/** Идентификатор роли в loop.json — нужен для resume-registry. */
+const SMOKE_ROLE = 'smoke';
+
 /**
- * Модель для smoke-теста. Берём ту же дешёвую, что и для title —
- * нам не нужно ничего умного, только проверить что цикл крутится.
- * Если она плохо вызывает тулы — заменим на claude-haiku или gpt-4o-mini.
+ * Модель для smoke. Ту же gemini-flash-lite, что и для title — она
+ * быстрая, дешёвая, и сейчас задача — проверить инфраструктуру, а не
+ * качество ответов. Если в проде окажется, что эта модель плохо
+ * вызывает тулы — поменяем на claude-haiku.
  */
 const SMOKE_MODEL = 'google/gemini-3.1-flash-lite-preview';
 
 /**
- * System prompt: жёстко направляет модель в kb.write, чтобы smoke-тест
- * был детерминированным. Без этого модель может «обсудить» задачу и
- * не вызвать ни одного тула.
+ * System prompt: жёстко направляет модель в kb.write/ask_user, чтобы
+ * smoke-тесты были детерминированными. Без направления модель часто
+ * «обсуждает» задачу и не вызывает ни одного тула.
  */
 const SMOKE_SYSTEM_PROMPT = [
   'You are a smoke-test agent for an AI Frontend Agent extension.',
-  'You have access to kb.* tools (read/write/list/grep) sandboxed to .agents/knowledge/.',
-  'Rules:',
-  '- ALWAYS call at least one kb tool before giving a final text reply.',
-  '- For "create file" requests, use kb.write directly.',
-  '- After all tool calls succeed, give a short final reply describing what you did.',
-  '- Use paths like "smoke/<filename>.md" inside kb.',
+  'Available tools (sandboxed to .agents/knowledge/):',
+  '- kb.read / kb.write / kb.list / kb.grep — for files inside knowledge base.',
+  '- ask_user — to ask the user a clarifying question and wait for the answer.',
+  'STRICT RULES:',
+  '- NEVER invent missing details. If the user did not specify file content, list items, names, etc. — you MUST call ask_user FIRST and wait for a real answer.',
+  '- Placeholder text like "Это файл для smoke-теста" is NOT acceptable as a substitute for asking.',
+  '- For "create file" requests, save under "smoke/<name>.md" via kb.write — but only AFTER you have all needed details.',
+  '- ALWAYS call at least one tool before any final text reply.',
+  '- After tools succeed, give a short final reply describing what you did.',
 ].join('\n');
+
+/** Полный набор тулов smoke-роли — ровно его пишем в loop.json. */
+function buildSmokeRegistry(): ToolRegistry {
+  const registry: ToolRegistry = new Map();
+  for (const tool of kbTools) registry.set(tool.name, tool);
+  registry.set(askUserTool.name, askUserTool as ToolDefinition);
+  return registry;
+}
+
+/** Имена тулов smoke-роли — для записи в loop.json и resume. */
+function smokeToolNames(): string[] {
+  return [...kbTools.map((t) => t.name), askUserTool.name];
+}
 
 /**
  * Создать минимальный ран под smoke (без полноценного service.createRun,
@@ -67,12 +102,89 @@ async function createSmokeRun(prompt: string): Promise<RunMeta> {
 }
 
 /**
- * Зарегистрировать команду в extension host. Вызывается из `activate`.
+ * Финализатор: пишет финальный ответ модели (или причину фейла) в
+ * `chat.jsonl`, обновляет статус. Используется и в первичном запуске,
+ * и в resume — чтобы не дублировать код.
+ */
+async function finalizeRun(
+  runId: string,
+  outcome:
+    | { kind: 'completed'; finalContent: string; iterations: number }
+    | { kind: 'failed'; reason: string; iterations: number }
+): Promise<void> {
+  if (outcome.kind === 'completed') {
+    const message = {
+      id: crypto.randomBytes(6).toString('hex'),
+      from: 'agent:smoke',
+      at: new Date().toISOString(),
+      text: outcome.finalContent,
+    };
+    await appendChatMessage(runId, message);
+    broadcast({ type: 'runs.message.appended', runId, message });
+    const updated = await updateRunStatus(runId, 'awaiting_human');
+    if (updated) broadcast({ type: 'runs.updated', meta: updated });
+    void vscode.window.showInformationMessage(
+      `Smoke OK (${outcome.iterations} итераций). См. .agents/runs/${runId}/`
+    );
+  } else {
+    const message = {
+      id: crypto.randomBytes(6).toString('hex'),
+      from: 'agent:system',
+      at: new Date().toISOString(),
+      text: `Smoke failed: ${outcome.reason}`,
+    };
+    await appendChatMessage(runId, message);
+    broadcast({ type: 'runs.message.appended', runId, message });
+    const updated = await updateRunStatus(runId, 'failed');
+    if (updated) broadcast({ type: 'runs.updated', meta: updated });
+    void vscode.window.showErrorMessage(`Smoke failed: ${outcome.reason}`);
+  }
+}
+
+/**
+ * Зарегистрировать resumer для smoke-роли. Вызывается из `activate`,
+ * один раз за сессию VS Code. Сам resumer вызывается, когда приходит
+ * `runs.userAnswer` для рана, чей in-memory loop уже умер.
+ */
+export function registerToolLoopSmokeResumer(): void {
+  registerRoleResumer(
+    SMOKE_ROLE,
+    async ({ runId, apiKey, config, events, pendingToolCallId, userAnswer }) => {
+      // Восстановим историю и допишем системную диагностику в лог,
+      // чтобы при чтении `tools.jsonl` было понятно, где случился resume.
+      await logResume(runId, pendingToolCallId);
+      const initialHistory = reconstructHistory(config, events, pendingToolCallId, userAnswer);
+
+      const registry = buildSmokeRegistry();
+      // Вернём статус в running до первого запроса — UI увидит, что
+      // ран снова работает (был awaiting_user_input до этого момента).
+      const resumed = await updateRunStatus(runId, 'running');
+      if (resumed) broadcast({ type: 'runs.updated', meta: resumed });
+
+      const result = await runAgentLoop({
+        runId,
+        apiKey,
+        model: config.model,
+        systemPrompt: config.systemPrompt,
+        userMessage: config.userMessage,
+        tools: registry,
+        temperature: config.temperature,
+        initialHistory,
+      });
+
+      await finalizeRun(runId, result);
+    }
+  );
+}
+
+/**
+ * Зарегистрировать саму команду в extension host. Вызывается из `activate`.
  */
 export function registerToolLoopSmokeCommand(context: vscode.ExtensionContext): vscode.Disposable {
   return vscode.commands.registerCommand('aiFrontendAgent.runToolLoopSmoke', async () => {
     const prompt = await vscode.window.showInputBox({
-      prompt: 'Smoke prompt (например: "Создай smoke/note.md с текстом hello")',
+      prompt:
+        'Smoke prompt (например: "Создай smoke/note.md" или "...без указания текста" — тогда агент задаст вопрос)',
       placeHolder: 'Создай smoke/note.md с текстом hello',
     });
     if (!prompt) return;
@@ -94,11 +206,20 @@ export function registerToolLoopSmokeCommand(context: vscode.ExtensionContext): 
       return;
     }
 
-    const registry: ToolRegistry = new Map();
-    for (const tool of kbTools) registry.set(tool.name, tool);
+    // Записываем loop.json ДО старта цикла — иначе перезапуск VS Code
+    // ровно на первом запросе оставит ран без возможности resume.
+    await writeLoopConfig(meta.id, {
+      model: SMOKE_MODEL,
+      systemPrompt: SMOKE_SYSTEM_PROMPT,
+      toolNames: smokeToolNames(),
+      userMessage: prompt,
+      role: SMOKE_ROLE,
+    });
 
+    broadcast({ type: 'runs.updated', meta });
     void vscode.window.showInformationMessage(`Smoke-ран ${meta.id} запущен. См. .agents/runs/`);
 
+    const registry = buildSmokeRegistry();
     const result = await runAgentLoop({
       runId: meta.id,
       apiKey,
@@ -108,27 +229,6 @@ export function registerToolLoopSmokeCommand(context: vscode.ExtensionContext): 
       tools: registry,
     });
 
-    // Результат финального assistant-ответа дублируем в chat.jsonl —
-    // это ровно та логика, которую потом продакт/архитектор будут делать
-    // штатно. Здесь же — для проверки, что всё доезжает в ленту.
-    if (result.kind === 'completed') {
-      await appendChatMessage(meta.id, {
-        id: crypto.randomBytes(6).toString('hex'),
-        from: 'agent:smoke',
-        at: new Date().toISOString(),
-        text: result.finalContent,
-      });
-      void vscode.window.showInformationMessage(
-        `Smoke OK (${result.iterations} итераций). См. .agents/runs/${meta.id}/`
-      );
-    } else {
-      await appendChatMessage(meta.id, {
-        id: crypto.randomBytes(6).toString('hex'),
-        from: 'agent:system',
-        at: new Date().toISOString(),
-        text: `Smoke failed: ${result.reason}`,
-      });
-      void vscode.window.showErrorMessage(`Smoke failed: ${result.reason}`);
-    }
+    await finalizeRun(meta.id, result);
   });
 }

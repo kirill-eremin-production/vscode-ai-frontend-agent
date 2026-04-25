@@ -45,6 +45,17 @@ export interface AgentLoopParams {
   maxIterations?: number;
   /** Опционально — температура. */
   temperature?: number;
+  /**
+   * Опциональная стартовая история для resume-режима. Если задана —
+   * НЕ собираем `[system, user]` заново, а используем как есть. Это
+   * нужно для возобновления цикла после перезапуска VS Code: история
+   * восстанавливается из `tools.jsonl` + ответа пользователя.
+   *
+   * При resume в истории ДОЛЖЕН уже лежать последний `role: "tool"`
+   * с ответом на pending ask_user — тогда первый запрос модели уже
+   * увидит результат и сможет продолжить.
+   */
+  initialHistory?: ChatMessage[];
 }
 
 /** Результат работы цикла. Дискриминированный union по `kind`. */
@@ -94,7 +105,9 @@ function buildToolsWire(registry: ToolRegistry): ToolDefinitionWire[] {
  */
 async function executeToolCall(
   tool: ToolDefinition,
-  rawArgs: string
+  rawArgs: string,
+  runId: string,
+  toolCallId: string
 ): Promise<{ contentForModel: string; resultForLog: unknown; errorForLog?: string }> {
   const validation = validateToolArgs(tool, rawArgs);
   if (!validation.ok) {
@@ -106,7 +119,7 @@ async function executeToolCall(
   }
 
   try {
-    const result = await tool.handler(validation.args);
+    const result = await tool.handler(validation.args, { runId, toolCallId });
     return {
       contentForModel: JSON.stringify({ result }),
       resultForLog: result,
@@ -131,10 +144,14 @@ export async function runAgentLoop(params: AgentLoopParams): Promise<AgentLoopRe
 
   // История сообщений, которую растим по ходу цикла. Формат — ровно тот,
   // который OpenRouter ожидает в `messages`, никаких внутренних типов.
-  const history: ChatMessage[] = [
-    { role: 'system', content: params.systemPrompt },
-    { role: 'user', content: params.userMessage },
-  ];
+  // В resume-режиме берём готовую историю целиком; иначе собираем
+  // первые два сообщения сами.
+  const history: ChatMessage[] = params.initialHistory
+    ? [...params.initialHistory]
+    : [
+        { role: 'system', content: params.systemPrompt },
+        { role: 'user', content: params.userMessage },
+      ];
 
   for (let iteration = 1; iteration <= maxIterations; iteration++) {
     let response;
@@ -208,7 +225,7 @@ export async function runAgentLoop(params: AgentLoopParams): Promise<AgentLoopRe
         continue;
       }
 
-      const exec = await executeToolCall(tool, call.function.arguments);
+      const exec = await executeToolCall(tool, call.function.arguments, params.runId, call.id);
       history.push({
         role: 'tool',
         tool_call_id: call.id,
