@@ -127,6 +127,67 @@ describe('layoutCanvas', () => {
     expect(result.nodes[0].role).toBe('product');
   });
 
+  it('handoff-ребро несёт bridgeSessionId; повторный handoff заменяет на свежий', () => {
+    // Drill-in #0026: клик по стрелке открывает чат той сессии, что в
+    // bridgeSessionId. Если на одну пару (product→architect) случилось
+    // два bridge'а подряд (повторный handoff после возврата), берём
+    // последнюю — это «активная нитка» этой связи.
+    const result = layoutCanvas(
+      meta([
+        session({
+          id: 's1',
+          kind: 'user-agent',
+          participants: [{ kind: 'agent', role: 'product' }],
+        }),
+        session({
+          id: 's2',
+          kind: 'agent-agent',
+          parentSessionId: 's1',
+          participants: [
+            { kind: 'agent', role: 'product' },
+            { kind: 'agent', role: 'architect' },
+          ],
+        }),
+        session({
+          id: 's3',
+          kind: 'agent-agent',
+          parentSessionId: 's1',
+          updatedAt: '2026-04-26T11:00:00Z',
+          participants: [
+            { kind: 'agent', role: 'product' },
+            { kind: 'agent', role: 'architect' },
+          ],
+        }),
+      ])
+    );
+    const handoff = result.edges.find((e) => e.id === 'product->architect');
+    expect(handoff?.bridgeSessionId).toBe('s3');
+  });
+
+  it('user-edge несёт bridgeSessionId соответствующего hybrid-bridge', () => {
+    const result = layoutCanvas(
+      meta([
+        session({
+          id: 's1',
+          kind: 'user-agent',
+          participants: [{ kind: 'user' }, { kind: 'agent', role: 'product' }],
+        }),
+        session({
+          id: 's2',
+          kind: 'agent-agent',
+          parentSessionId: 's1',
+          participants: [
+            { kind: 'user' },
+            { kind: 'agent', role: 'product' },
+            { kind: 'agent', role: 'architect' },
+          ],
+        }),
+      ])
+    );
+    const userEdge = result.edges.find((e) => e.id === 'user->architect');
+    expect(userEdge?.bridgeSessionId).toBe('s2');
+  });
+
   it('width/height учитывают все колонки и ряды', () => {
     const result = layoutCanvas(
       meta([

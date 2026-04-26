@@ -1,6 +1,7 @@
 import { useMemo, useState } from 'react';
 import {
   composerSendKey,
+  drillIntoSession,
   selectRunDetailsTab,
   sendFinalizeSignal,
   sendUserMessage,
@@ -99,6 +100,7 @@ export function RunDetails() {
             meta={meta}
             tools={tools}
             onSwitchToChat={() => setRunDetailsTab(meta.id, 'chat')}
+            onDrillIn={(sessionId) => drillIntoSession(meta.id, sessionId)}
           />
         </div>
       ) : (

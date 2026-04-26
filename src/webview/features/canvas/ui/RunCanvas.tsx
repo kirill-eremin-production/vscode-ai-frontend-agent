@@ -30,6 +30,12 @@ export interface RunCanvasProps {
   meta: RunMeta;
   tools: ToolEvent[];
   onSwitchToChat?: () => void;
+  /**
+   * Drill-in (#0026): открыть выбранную сессию на вкладке «Чат». RunCanvas
+   * сам решает, какую сессию передать (для кубика — selectActiveSessionForRole,
+   * для стрелки — bridgeSessionId), наружу уходит уже готовый sessionId.
+   */
+  onDrillIn?: (sessionId: string) => void;
 }
 
 export function RunCanvas(props: RunCanvasProps) {
@@ -40,7 +46,7 @@ export function RunCanvas(props: RunCanvasProps) {
   );
 }
 
-function RunCanvasInner({ meta, tools }: RunCanvasProps) {
+function RunCanvasInner({ meta, tools, onDrillIn }: RunCanvasProps) {
   const layout = useMemo(() => layoutCanvas(meta), [meta]);
   // Один тикер на канвас (а не на каждый кубик) — перерасчёт «N мин назад».
   // 60 сек хватает: меньшая разрешающая способность чем у formatRelativeTime.
@@ -48,7 +54,14 @@ function RunCanvasInner({ meta, tools }: RunCanvasProps) {
   const flashes = useArrowFlashes(meta);
   return (
     <div className="run-canvas relative h-full w-full overflow-hidden bg-[var(--vscode-editor-background)]">
-      <CanvasViewport layout={layout} meta={meta} tools={tools} now={now} flashes={flashes} />
+      <CanvasViewport
+        layout={layout}
+        meta={meta}
+        tools={tools}
+        now={now}
+        flashes={flashes}
+        onDrillIn={onDrillIn}
+      />
     </div>
   );
 }
@@ -159,6 +172,7 @@ function CanvasViewport(props: {
   tools: ToolEvent[];
   now: Date;
   flashes: Map<string, FlashKind>;
+  onDrillIn?: (sessionId: string) => void;
 }) {
   const { layout } = props;
   const containerRef = useRef<HTMLDivElement>(null);
@@ -286,6 +300,7 @@ function CanvasViewport(props: {
             from={layout.nodes.find((n) => n.role === edge.from)}
             to={layout.nodes.find((n) => n.role === edge.to)}
             flash={props.flashes.get(edge.id)}
+            onDrillIn={props.onDrillIn}
           />
         ))}
         {layout.nodes.map((node) => (
@@ -294,6 +309,18 @@ function CanvasViewport(props: {
             node={node}
             activity={activityForNode(node, props.meta, props.tools)}
             now={props.now}
+            onDrillIn={
+              props.onDrillIn
+                ? () => {
+                    // Кубик роли — открыть «её» актуальную сессию (живую, если
+                    // есть; иначе свежайшую). User-кубик в hybrid'е: открыть
+                    // bridge с user-участием (берём первую попавшуюся, у user
+                    // нет «своей» сессии).
+                    const sessionId = resolveCubeDrillSession(node.role, props.meta);
+                    if (sessionId) props.onDrillIn?.(sessionId);
+                  }
+                : undefined
+            }
           />
         ))}
       </svg>
@@ -311,6 +338,8 @@ interface CanvasNodeViewProps {
   node: CanvasNode;
   activity: RunActivity;
   now: Date;
+  /** Drill-in (#0026): открыть сессию этой роли в чате. */
+  onDrillIn?: () => void;
 }
 
 /**
@@ -327,7 +356,7 @@ interface CanvasNodeViewProps {
  *  - idle/done → нейтральный без декораций.
  */
 const CanvasNodeView = memo(function CanvasNodeView(props: CanvasNodeViewProps) {
-  const { node, activity, now } = props;
+  const { node, activity, now, onDrillIn } = props;
   const tone = toneForKind(activity.kind);
   const showSpinner = activity.kind === 'thinking' || activity.kind === 'tool';
   const relTime = node.lastActivityAt ? formatRelativeTime(node.lastActivityAt, now) : undefined;
@@ -337,6 +366,17 @@ const CanvasNodeView = memo(function CanvasNodeView(props: CanvasNodeViewProps) 
       data-canvas-activity={activity.kind}
       transform={`translate(${node.x}, ${node.y})`}
       onMouseDown={(e) => e.stopPropagation()}
+      onClick={onDrillIn}
+      onKeyDown={(e) => {
+        if (!onDrillIn) return;
+        if (e.key === 'Enter' || e.key === ' ') {
+          e.preventDefault();
+          onDrillIn();
+        }
+      }}
+      tabIndex={onDrillIn ? 0 : undefined}
+      role={onDrillIn ? 'button' : undefined}
+      style={onDrillIn ? { cursor: 'pointer' } : undefined}
     >
       <rect
         width={node.width}
@@ -439,9 +479,15 @@ function CanvasEdgeView(props: {
   from: CanvasNode | undefined;
   to: CanvasNode | undefined;
   flash?: FlashKind;
+  onDrillIn?: (sessionId: string) => void;
 }) {
-  const { edge, from, to, flash } = props;
+  const { edge, from, to, flash, onDrillIn } = props;
   if (!from || !to) return null;
+  // Drill-in (#0026) активен только если у ребра есть привязка к bridge-
+  // сессии — на практике handoff/user-edge всегда привязаны, но пусть
+  // тип останется опциональным (страховка от рассинхрона с layout).
+  const drill =
+    edge.bridgeSessionId && onDrillIn ? () => onDrillIn(edge.bridgeSessionId!) : undefined;
   const fx = from.x + from.width;
   const fy = from.y + from.height / 2;
   const tx = to.x;
@@ -465,9 +511,21 @@ function CanvasEdgeView(props: {
     <g
       data-canvas-edge={`${edge.from}->${edge.to}`}
       data-canvas-edge-kind={edge.kind}
+      data-canvas-edge-session={edge.bridgeSessionId}
       data-arrow-flashing={flash ? 'true' : undefined}
       data-arrow-flash-kind={flash ?? undefined}
       onMouseDown={(e) => e.stopPropagation()}
+      onClick={drill}
+      onKeyDown={(e) => {
+        if (!drill) return;
+        if (e.key === 'Enter' || e.key === ' ') {
+          e.preventDefault();
+          drill();
+        }
+      }}
+      tabIndex={drill ? 0 : undefined}
+      role={drill ? 'button' : undefined}
+      style={drill ? { cursor: 'pointer' } : undefined}
     >
       <path
         className={flashClass}
@@ -561,6 +619,29 @@ function activityForNode(node: CanvasNode, meta: RunMeta, tools: ToolEvent[]): R
   }
 
   return describeRunActivity({ meta: { status: session.status }, tools, role: node.role });
+}
+
+/**
+ * Drill-in (#0026) с кубика: какую сессию открыть в чате.
+ *
+ *  - Для агента — `selectActiveSessionForRole`: live > closed, среди
+ *    candidate'ов берём свежайшую по `updatedAt`. Это совпадает с
+ *    логикой live-индикатора (#0024), пользователь не удивится результату.
+ *  - Для user-кубика (только в hybrid'е) — bridge с user-участником,
+ *    свежайшая (там user реально «говорил»). Если такой нет — undefined,
+ *    клик no-op (но в реальности hybrid-кубик появляется только когда
+ *    bridge с user уже существует).
+ */
+function resolveCubeDrillSession(role: Role, meta: RunMeta): string | undefined {
+  if (role === 'user') {
+    const bridges = (meta.sessions ?? [])
+      .filter(
+        (s) => s.kind === 'agent-agent' && (s.participants ?? []).some((p) => p.kind === 'user')
+      )
+      .sort((a, b) => (a.updatedAt < b.updatedAt ? 1 : -1));
+    return bridges[0]?.id;
+  }
+  return selectActiveSessionForRole(meta, role)?.id;
 }
 
 function idleArtifactLabel(role: Role, meta: RunMeta): string {

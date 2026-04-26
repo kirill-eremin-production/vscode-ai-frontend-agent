@@ -48,6 +48,15 @@ export interface CanvasEdge {
   label: string;
   /** Источник handoff'а: 'agent' = handoff между агентами, 'user' = вмешательство. */
   kind: 'handoff' | 'user';
+  /**
+   * Bridge-сессия, которую представляет ребро (#0026). Для drill-in:
+   * клик по стрелке открывает чат именно этой сессии. Если рёбер с
+   * одинаковой парой (from→to) несколько (повторные handoff'ы) — берём
+   * последнюю (самую свежую): она обычно и есть «активная нитка» этой
+   * связи. Поле опциональное только из-за обратной совместимости в типах,
+   * на практике handoff/user-edge всегда привязаны к bridge.
+   */
+  bridgeSessionId?: string;
 }
 
 export interface CanvasLayout {
@@ -138,12 +147,12 @@ export function layoutCanvas(meta: RunMeta): CanvasLayout {
   const hasUser = sessions.some((s) => s.kind === 'agent-agent' && hasUserParticipant(s));
 
   // 3) Рёбра: handoff'ы (parent → bridge) и user-вмешательство.
-  const edges: CanvasEdge[] = [];
-  const seenEdge = new Set<string>();
+  // Накапливаем edge'ы в map по id; при повторе той же пары (повторный
+  // handoff на ту же роль) заменяем bridgeSessionId на более свежий —
+  // drill-in открывает «последнюю нитку» этой связи (acceptance #0026).
+  const edgesById = new Map<string, CanvasEdge>();
   const addEdge = (edge: CanvasEdge) => {
-    if (seenEdge.has(edge.id)) return;
-    seenEdge.add(edge.id);
-    edges.push(edge);
+    edgesById.set(edge.id, edge);
   };
 
   for (const session of sessions) {
@@ -158,6 +167,7 @@ export function layoutCanvas(meta: RunMeta): CanvasLayout {
         to: recipient,
         label: handoffArtifactLabel(sourceRole, meta),
         kind: 'handoff',
+        bridgeSessionId: session.id,
       });
     }
     if (hasUserParticipant(session)) {
@@ -167,9 +177,11 @@ export function layoutCanvas(meta: RunMeta): CanvasLayout {
         to: recipient,
         label: 'вмешательство',
         kind: 'user',
+        bridgeSessionId: session.id,
       });
     }
   }
+  const edges: CanvasEdge[] = [...edgesById.values()];
 
   // 4) Колонки: BFS от корней (агентов без входящих handoff-рёбер).
   const incoming = new Map<Role, Role[]>();

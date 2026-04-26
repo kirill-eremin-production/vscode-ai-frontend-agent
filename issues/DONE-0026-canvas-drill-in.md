@@ -1,7 +1,7 @@
 ---
 id: 0026
 title: Canvas — drill-in в чаты агентов и сессии
-status: open
+status: done
 created: 2026-04-26
 ---
 

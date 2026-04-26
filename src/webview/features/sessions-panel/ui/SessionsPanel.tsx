@@ -171,6 +171,7 @@ function SessionTreeLevel(props: {
             <button
               type="button"
               aria-pressed={isViewed}
+              data-session-id={node.session.id}
               className={
                 'w-full flex items-center justify-between gap-1 px-2 py-1 text-left text-[12px] rounded-sm border ' +
                 (isViewed

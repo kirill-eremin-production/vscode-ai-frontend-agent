@@ -119,6 +119,15 @@ interface RunsState {
    * Persist'ится через UI-префы под ключом `runDetails.tab.<runId>`.
    */
   runDetailsTabByRun: Record<string, RunDetailsTab>;
+  /**
+   * Per-run «последняя просмотренная сессия в чате» (#0026). Запоминается
+   * при drill-in с канваса (клик по кубику/стрелке) и при ручном выборе
+   * сессии в правой панели. При повторном переключении на вкладку «Чат»
+   * (после возврата на «Карту») восстанавливаем именно её, чтобы
+   * пользователь не терял контекст. Persist'ится под ключом
+   * `mainArea.lastSession.<runId>`.
+   */
+  lastViewedSessionByRun: Record<string, string>;
 }
 
 export type RunDetailsTab = 'canvas' | 'chat';
@@ -143,6 +152,7 @@ const initialState: RunsState = {
   runsListLoaded: false,
   pendingByKey: {},
   runDetailsTabByRun: {},
+  lastViewedSessionByRun: {},
 };
 
 /** Пометить локальный pending-флаг для произвольной операции (#0022). */
@@ -189,16 +199,69 @@ function runDetailsTabPrefKey(runId: string): string {
   return `${RUN_DETAILS_TAB_PREF_PREFIX}${runId}`;
 }
 
+const LAST_VIEWED_SESSION_PREF_PREFIX = 'mainArea.lastSession.';
+
+function lastViewedSessionPrefKey(runId: string): string {
+  return `${LAST_VIEWED_SESSION_PREF_PREFIX}${runId}`;
+}
+
 /**
  * Записать выбранную вкладку run-details для конкретного рана (#0023).
  * Optimistic update + persist через UI-префы.
+ *
+ * #0026: при ручном переключении на 'chat' восстанавливаем
+ * `lastViewedSessionByRun[runId]`, если он есть и отличается от текущего
+ * выбранного. Это закрывает обещание «вернуться на канвас → клик «Чат» —
+ * вернёт ту же сессию, где остановился». Drill-in (`drillIntoSession`)
+ * сам выставляет lastViewed → setRunDetailsTab; здесь не дёргаем
+ * selectSession повторно, чтобы не отправить два `runs.get`.
  */
 export function setRunDetailsTab(runId: string, tab: RunDetailsTab): void {
+  const prevState = state;
   setState((prev) => ({
     ...prev,
     runDetailsTabByRun: { ...prev.runDetailsTabByRun, [runId]: tab },
   }));
   send({ type: 'state.setUiPref', key: runDetailsTabPrefKey(runId), value: tab });
+  if (tab !== 'chat' || prevState.selectedId !== runId) return;
+  const remembered = prevState.lastViewedSessionByRun[runId];
+  if (!remembered) return;
+  const currentSession =
+    prevState.selectedSessionId ?? prevState.selectedDetails?.meta.activeSessionId;
+  if (currentSession === remembered) return;
+  selectSession(runId, remembered);
+}
+
+/**
+ * Запомнить «последнюю просмотренную сессию» для рана (#0026). Не
+ * вызывается напрямую из UI — оборачивается в `selectSession` /
+ * `drillIntoSession`, чтобы все пути изменения просматриваемой сессии
+ * писали один и тот же ключ.
+ */
+function rememberLastViewedSession(runId: string, sessionId: string): void {
+  const prev = state.lastViewedSessionByRun[runId];
+  if (prev === sessionId) return;
+  setState((prevState) => ({
+    ...prevState,
+    lastViewedSessionByRun: { ...prevState.lastViewedSessionByRun, [runId]: sessionId },
+  }));
+  send({ type: 'state.setUiPref', key: lastViewedSessionPrefKey(runId), value: sessionId });
+}
+
+/**
+ * Drill-in с канваса (#0026): открыть конкретную сессию рана в чат-вкладке.
+ * Атомарно: запоминает сессию как «последнюю просмотренную», переключает
+ * вкладку на 'chat' и выбирает сессию. Используется кликом по кубику
+ * (sessionId = selectActiveSessionForRole) или стрелке (bridgeSessionId).
+ */
+export function drillIntoSession(runId: string, sessionId: string): void {
+  rememberLastViewedSession(runId, sessionId);
+  selectSession(runId, sessionId);
+  // setRunDetailsTab выше прочитал бы lastViewed из state и попытался
+  // вызвать selectSession ещё раз — но мы только что его уже вызвали
+  // и lastViewed уже совпадает, так что повторный вызов отрубится
+  // ранним return'ом по `currentSession === remembered`.
+  setRunDetailsTab(runId, 'chat');
 }
 
 /** Эффективная вкладка для рана: явный выбор пользователя или дефолт 'canvas'. */
@@ -343,6 +406,10 @@ export function selectSession(runId: string, sessionId: string): void {
     };
   });
   send({ type: 'runs.get', id: runId, sessionId });
+  // #0026: любое явное переключение сессии — это и есть «последнее
+  // просмотренное». Drill-in пишет тот же ключ через свой путь, но
+  // также проходит через selectSession — повторная запись идемпотентна.
+  rememberLastViewedSession(runId, sessionId);
 }
 
 /**
@@ -597,6 +664,7 @@ export function useRunsWiring(): void {
               ...prev.sessionsPanelCollapsedByRun,
             };
             const tabByRun: Record<string, RunDetailsTab> = { ...prev.runDetailsTabByRun };
+            const lastViewedByRun: Record<string, string> = { ...prev.lastViewedSessionByRun };
             for (const [key, value] of Object.entries(data.prefs)) {
               if (key.startsWith(SESSIONS_PANEL_PREF_PREFIX)) {
                 if (typeof value === 'boolean') {
@@ -610,12 +678,19 @@ export function useRunsWiring(): void {
                 }
                 continue;
               }
+              if (key.startsWith(LAST_VIEWED_SESSION_PREF_PREFIX)) {
+                if (typeof value === 'string' && value.length > 0) {
+                  lastViewedByRun[key.slice(LAST_VIEWED_SESSION_PREF_PREFIX.length)] = value;
+                }
+                continue;
+              }
             }
             return {
               ...prev,
               leftPanelCollapsed: typeof left === 'boolean' ? left : prev.leftPanelCollapsed,
               sessionsPanelCollapsedByRun: sessionsByRun,
               runDetailsTabByRun: tabByRun,
+              lastViewedSessionByRun: lastViewedByRun,
             };
           });
           return;
