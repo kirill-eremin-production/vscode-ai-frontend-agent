@@ -11,7 +11,7 @@ import { answerAsk, useRunsState } from '@shared/runs/store';
  * останется тем же.
  */
 export function RunDetails() {
-  const { selectedId, selectedDetails, pendingAsk } = useRunsState();
+  const { selectedId, selectedDetails, pendingAsk, selectedBrief } = useRunsState();
 
   if (!selectedId) {
     return <div className="run-details run-details--empty">Выберите ран слева.</div>;
@@ -44,6 +44,16 @@ export function RunDetails() {
           question={pendingAsk.question}
           context={pendingAsk.context}
         />
+      )}
+      {selectedBrief && (
+        // Бриф рендерим как сырой markdown в <pre> — внешний markdown-рендер
+        // тянуть не хочется ради одного блока. Когда роли начнут давать
+        // больше markdown-контента (план архитектора и т.п.), вынесем
+        // общий компонент с подсветкой.
+        <section className="run-details__brief">
+          <h3>Бриф</h3>
+          <pre className="run-details__brief-content">{selectedBrief}</pre>
+        </section>
       )}
       <section className="run-details__chat">
         <h3>Лента ({chat.length})</h3>

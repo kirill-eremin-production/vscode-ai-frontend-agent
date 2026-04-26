@@ -29,6 +29,15 @@ interface RunsState {
   selectedDetails: { meta: RunMeta; chat: ChatMessage[] } | undefined;
   pendingAsk: PendingAsk | undefined;
   pendingByRun: Record<string, PendingAsk>;
+  /**
+   * Содержимое `brief.md` выбранного рана, если оно уже на диске.
+   * Заполняется при `runs.get.result`. Хранится отдельно от
+   * `selectedDetails`, потому что бриф иногда обновляется без
+   * перезагрузки чата (например, продакт допишет уточнения после
+   * approve — тогда extension пришлёт фокус-обновление; на этой
+   * итерации такого пути нет, но место под него зарезервировано).
+   */
+  selectedBrief: string | undefined;
 }
 
 const initialState: RunsState = {
@@ -37,6 +46,7 @@ const initialState: RunsState = {
   selectedDetails: undefined,
   pendingAsk: undefined,
   pendingByRun: {},
+  selectedBrief: undefined,
 };
 
 /**
@@ -109,6 +119,9 @@ export function selectRun(id: string): void {
     // pendingAsk сразу подтягиваем из кэша, если уже знаем — снимет
     // мерцание «вопрос → нет вопроса → вопрос» при переключении.
     pendingAsk: prev.pendingByRun[id],
+    // Бриф нового выбранного рана пока неизвестен — сбрасываем,
+    // прилетит в `runs.get.result`. Иначе показывали бы бриф предыдущего.
+    selectedBrief: undefined,
   }));
   send({ type: 'runs.get', id });
 }
@@ -148,6 +161,7 @@ type ExtensionToWebviewMessage =
       meta?: RunMeta;
       chat?: ChatMessage[];
       pendingAsk?: PendingAsk;
+      brief?: string;
     }
   | { type: 'runs.created'; meta: RunMeta }
   | { type: 'runs.error'; message: string }
@@ -197,12 +211,18 @@ export function useRunsWiring(): void {
           setState((prev) => {
             if (prev.selectedId !== data.id) return prev;
             if (!data.meta) {
-              return { ...prev, selectedDetails: undefined, pendingAsk: undefined };
+              return {
+                ...prev,
+                selectedDetails: undefined,
+                pendingAsk: undefined,
+                selectedBrief: undefined,
+              };
             }
             return {
               ...prev,
               selectedDetails: { meta: data.meta, chat: data.chat ?? [] },
               pendingAsk: data.pendingAsk,
+              selectedBrief: data.brief,
             };
           });
           return;

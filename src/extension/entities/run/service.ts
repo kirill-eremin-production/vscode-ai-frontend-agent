@@ -4,6 +4,7 @@ import { generateTitle } from './title';
 import { appendChatMessage, initRunDir, listAllMeta, readChat, readMeta } from './storage';
 import type { ChatMessage, RunMeta } from './types';
 import { getOpenRouterKey, promptForOpenRouterKey } from '@ext/shared/secrets/openrouter-key';
+import { runProduct } from '@ext/features/product-role';
 
 /**
  * Сервисный слой для работы с ранами.
@@ -102,6 +103,18 @@ export async function createRun(
     text: trimmed,
   };
   await appendChatMessage(meta.id, firstMessage);
+
+  // Fire-and-forget запуск продактовой роли. Не await'им — IPC-ответ
+  // на `runs.create` должен прилететь сразу, прогресс роли пойдёт
+  // через broadcast (`runs.updated`, `runs.askUser`,
+  // `runs.message.appended`). Любые исключения внутри `runProduct`
+  // ловятся им же и превращаются в `failed`-статус, наружу не утекают.
+  void runProduct({ runId: meta.id, apiKey, prompt: trimmed }).catch((err) => {
+    // Совсем неожиданная ошибка (например, баг в самом `runProduct`'е,
+    // не пойманный его try/catch). Пишем в console — VS Code покажет
+    // в Extension Host output, чтобы при разработке было видно.
+    console.error('[runProduct] непойманная ошибка:', err);
+  });
 
   return meta;
 }

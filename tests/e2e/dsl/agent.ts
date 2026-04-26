@@ -98,6 +98,56 @@ export class AgentDriver {
   }
 
   /**
+   * Создать ран через webview-форму («Start run»). В отличие от
+   * `runSmoke` (где есть слеш-команда), у обычного рана нет
+   * палитровой команды — это сознательно, продуктовый поток UI идёт
+   * через панель. Поэтому открываем UI и нажимаем кнопку.
+   *
+   * Не ждёт окончания цикла — для этого есть `waitForBrief` /
+   * `waitForRunStatus`. Так тест может между стартом и финалом
+   * проверить промежуточные состояния (TC-18: ask_user, TC-20:
+   * durability).
+   */
+  async createRun(prompt: string): Promise<void> {
+    await this.openSidebar();
+    const ui = agentWebviewContent(this.window);
+    await ui.locator('.run-create__input').fill(prompt);
+    await ui.locator('.run-create button[type="submit"]').click();
+  }
+
+  /**
+   * Дождаться появления `brief.md` на диске единственного рана.
+   * Используется как сигнал «продакт довёл цикл до финала и записал
+   * артефакт». Опираемся на fs, а не на статус в `meta.json`, потому
+   * что у статуса временное окно `running → awaiting_human` короче,
+   * чем у файла на диске (после `writeBrief` ещё пишется чат и мета).
+   */
+  async waitForBrief(timeoutMs = 30_000): Promise<void> {
+    const deadline = Date.now() + timeoutMs;
+    while (Date.now() < deadline) {
+      const runs = listRuns(this.workspacePath);
+      if (runs.length > 0 && runs[0].brief !== undefined) return;
+      await new Promise((resolve) => setTimeout(resolve, 200));
+    }
+    throw new Error(`[agent] За ${timeoutMs} мс не появился brief.md ни у одного рана`);
+  }
+
+  /**
+   * Дождаться, пока статус единственного рана дойдёт до заданного.
+   * Альтернатива `waitForBrief` для случаев, когда финал — `failed`
+   * (брифа не будет, но статус мы всё равно увидим).
+   */
+  async waitForRunStatus(status: string, timeoutMs = 30_000): Promise<void> {
+    const deadline = Date.now() + timeoutMs;
+    while (Date.now() < deadline) {
+      const runs = listRuns(this.workspacePath);
+      if (runs.length > 0 && runs[0].meta?.status === status) return;
+      await new Promise((resolve) => setTimeout(resolve, 200));
+    }
+    throw new Error(`[agent] За ${timeoutMs} мс ран не достиг статуса "${status}"`);
+  }
+
+  /**
    * Дождаться, пока в `tools.jsonl` единственного рана появится
    * assistant-событие с tool_call'ом нужного тула. Polling по диску —
    * самый дешёвый способ синхронизации с agent-loop'ом, не зависящий

@@ -25,6 +25,7 @@ const META_FILE = 'meta.json';
 const CHAT_FILE = 'chat.jsonl';
 const TOOLS_FILE = 'tools.jsonl';
 const LOOP_FILE = 'loop.json';
+const BRIEF_FILE = 'brief.md';
 
 /**
  * Кастомная ошибка хранилища. Выкидывается в случаях, когда дальнейшая
@@ -188,6 +189,35 @@ export async function writeLoopConfig(runId: string, config: LoopConfig): Promis
   const tmpPath = path.join(dir, `${LOOP_FILE}.tmp`);
   await fs.writeFile(tmpPath, JSON.stringify(config, null, 2), 'utf8');
   await fs.rename(tmpPath, finalPath);
+}
+
+/**
+ * Атомарно записать `brief.md` рана. Тот же приём temp+rename, что для
+ * meta.json — на диске всегда либо старый brief, либо новый, никогда
+ * полу-записанный (важно: `brief.md` коммитится в git, и продакт пишет
+ * его как «финальный артефакт» — обрыв посреди записи поломал бы кейс
+ * «модель закончила, но текст недописан»).
+ */
+export async function writeBrief(runId: string, content: string): Promise<void> {
+  const dir = getRunDir(runId);
+  const finalPath = path.join(dir, BRIEF_FILE);
+  const tmpPath = path.join(dir, `${BRIEF_FILE}.tmp`);
+  await fs.writeFile(tmpPath, content, 'utf8');
+  await fs.rename(tmpPath, finalPath);
+}
+
+/**
+ * Прочитать `brief.md`. Возвращает undefined, если файла ещё нет —
+ * это нормальное состояние рана до завершения продактовой роли. UI
+ * по этому полю решает, рендерить ли блок «Бриф».
+ */
+export async function readBrief(runId: string): Promise<string | undefined> {
+  const filePath = path.join(getRunDir(runId), BRIEF_FILE);
+  try {
+    return await fs.readFile(filePath, 'utf8');
+  } catch {
+    return undefined;
+  }
 }
 
 /** Прочитать конфиг. Undefined, если файла нет или JSON битый. */

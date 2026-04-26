@@ -1,8 +1,24 @@
 ---
 id: 0003
 title: Реализовать роль продакта (prompt → brief.md, с kb и диалогом)
-status: open
+status: done
 created: 2026-04-26
+completed: 2026-04-26
+---
+
+## Outcome
+
+- Роль живёт в [src/extension/features/product-role/](src/extension/features/product-role/): `runProduct` (fire-and-forget из `createRun`) + `registerProductResumer` (durability через перезапуск).
+- Константы и system prompt — в [src/extension/entities/run/roles/](src/extension/entities/run/roles/): модель gemini, промпт собирается через `buildProductSystemPrompt` (включает целиком `PRODUCT_KB_README_MARKDOWN` из #0002).
+- Sandbox kb продакта реализован обёрткой `buildRoleScopedKbTools('product')` в [role-kb-tools.ts](src/extension/features/product-role/role-kb-tools.ts) — модель пишет относительные пути (`decisions/...`), под капотом всё префиксуется в `product/...`. Юнит-тесты в [role-kb-tools.test.ts](src/extension/features/product-role/role-kb-tools.test.ts) проверяют sandbox round-trip.
+- Финальный `brief.md` сохраняется атомарно через `writeBrief` в [storage.ts](src/extension/entities/run/storage.ts); `readBrief` читает его для `runs.get.result`. Webview ([RunDetails.tsx](src/webview/features/run-list/ui/RunDetails.tsx)) рендерит секцию «Бриф» поверх ленты чата.
+- Превью брифа дублируется в `chat.jsonl` с `from: "agent:product"` (первые 600 символов), полный текст — в `brief.md`.
+- Статусы: `draft → running → awaiting_user_input ↔ running → awaiting_human` (успех) или `failed` (любая ошибка цикла или пустой финальный assistant.content).
+
+E2E-тесты для роли — отдельной задачей: ставка #0006 формализовала, что мы тестируем мокаными ранами; продакт прокатается через тот же fake-fetch, но контракт ask_user/kb-вызовов в моке больше, и развести его аккуратно — значимая работа.
+
+Open question из #0002 («автоматически инициализировать `README.md` в workspace») оставлен открытым: на этой итерации продакт сам читает schema-инструкции через system prompt, на диск readme не пишем — проще, и пользователю не «прилетает» внезапный файл при первом ране.
+
 ---
 
 ## Context

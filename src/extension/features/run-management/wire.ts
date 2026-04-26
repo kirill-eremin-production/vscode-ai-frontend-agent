@@ -1,6 +1,6 @@
 import * as vscode from 'vscode';
 import { createRun, getRunDetails, listRuns } from '@ext/entities/run/service';
-import { findPendingAsk } from '@ext/entities/run/storage';
+import { findPendingAsk, readBrief } from '@ext/entities/run/storage';
 import { resumeRun } from '@ext/entities/run/resume-registry';
 import { resolvePendingAsk } from '@ext/shared/agent-loop';
 import { promptForOpenRouterKey } from '@ext/shared/secrets/openrouter-key';
@@ -90,12 +90,18 @@ export function wireRunMessages(
             details?.meta.status === 'awaiting_user_input'
               ? await findPendingAsk(msg.id)
               : undefined;
+          // brief.md читаем безусловно — он может уже лежать в любом
+          // статусе после фейла (если роль успела дописать) или в
+          // awaiting_human (штатный финал). readBrief сам вернёт
+          // undefined, если файла нет — лишнего I/O не будет.
+          const brief = details ? await readBrief(msg.id) : undefined;
           send({
             type: 'runs.get.result',
             id: msg.id,
             meta: details?.meta,
             chat: details?.chat,
             pendingAsk,
+            brief,
           });
           return;
         }

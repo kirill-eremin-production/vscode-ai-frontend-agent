@@ -30,6 +30,21 @@ export interface ChatEntry {
   text: string;
 }
 
+/**
+ * Минимальный снимок `meta.json` — поля, которые тестам реально нужно
+ * проверять. `status` оставлен строкой, а не enum, чтобы не дублировать
+ * `RunStatus` из extension'а в e2e-DSL (граница между ними — IPC, а
+ * не TypeScript-импорт).
+ */
+export interface RunMetaSnapshot {
+  id: string;
+  title: string;
+  prompt: string;
+  status: string;
+  createdAt: string;
+  updatedAt: string;
+}
+
 export class RunArtifacts {
   constructor(
     private readonly workspacePath: string,
@@ -49,6 +64,24 @@ export class RunArtifacts {
   /** Распарсенный `chat.jsonl`. */
   get chat(): ChatEntry[] {
     return readJsonl<ChatEntry>(path.join(this.runDir, 'chat.jsonl'));
+  }
+
+  /**
+   * `meta.json` рана. Используется проверками статуса (продакт переводит
+   * ран в `awaiting_human` после успеха или `failed` при ошибке —
+   * без чтения меты этого не увидеть).
+   */
+  get meta(): RunMetaSnapshot | undefined {
+    const filePath = path.join(this.runDir, 'meta.json');
+    if (!fs.existsSync(filePath)) return undefined;
+    return JSON.parse(fs.readFileSync(filePath, 'utf8')) as RunMetaSnapshot;
+  }
+
+  /** Содержимое `brief.md`, если уже на диске. Undefined — роль не дописала. */
+  get brief(): string | undefined {
+    const filePath = path.join(this.runDir, 'brief.md');
+    if (!fs.existsSync(filePath)) return undefined;
+    return fs.readFileSync(filePath, 'utf8');
   }
 
   /** Достать содержимое файла из knowledge-песочницы. */

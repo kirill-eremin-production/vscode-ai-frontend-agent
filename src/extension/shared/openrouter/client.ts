@@ -89,7 +89,7 @@ export interface ToolDefinitionWire {
 
 /** Параметры одного синхронного запроса в OpenRouter. */
 export interface ChatRequest {
-  /** Полный slug модели в формате OpenRouter, например `anthropic/claude-haiku-4.5`. */
+  /** Полный slug модели в формате OpenRouter, в приоритете gemini 3 flash. */
   model: string;
   /** История сообщений в порядке от системного к последнему пользовательскому. */
   messages: ChatMessage[];
@@ -269,8 +269,13 @@ export async function chat(apiKey: string, request: ChatRequest): Promise<ChatRe
     // Сюда попадаем только при !response.ok. Тело читаем как текст,
     // потому что при ошибках провайдер иногда отдаёт не-JSON (HTML/plain).
     const errorBody = await response.text().catch(() => '');
+    // Тело ответа кладём прямо в message: вызывающий код пишет его в
+    // tools.jsonl/чат как plain text, и без body причину 400/422
+    // невозможно отличить (плохой slug модели vs кривой tool schema
+    // vs пустой messages — все приходят одинаковым «HTTP 400»).
+    const bodyPreview = errorBody ? ` — ${errorBody.slice(0, 1000)}` : '';
     lastError = new OpenRouterError(
-      `OpenRouter HTTP ${response.status}`,
+      `OpenRouter HTTP ${response.status}${bodyPreview}`,
       response.status,
       errorBody
     );

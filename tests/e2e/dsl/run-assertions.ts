@@ -95,6 +95,39 @@ export function expectResumeMarker(run: RunArtifacts): void {
   expect(marker, 'Ожидали system-событие про resume в tools.jsonl').toBeTruthy();
 }
 
+/** Статус рана (из `meta.json`) совпадает с ожидаемым. */
+export function expectRunStatus(run: RunArtifacts, status: string): void {
+  expect(run.meta, 'Ожидали meta.json у рана').toBeTruthy();
+  expect(run.meta?.status).toBe(status);
+}
+
+/**
+ * `brief.md` есть на диске и содержит все обязательные секции, объявленные
+ * в роли продакта (#0003). Не ставим жёсткий regex на порядок — модель
+ * обязана соблюдать порядок, но порядок проверяется отдельным тестом
+ * (если когда-нибудь решим), а здесь интересует «бриф полный, секции
+ * на месте». Запрещаем `## Открытые вопросы` — это явно объявленная
+ * анти-секция в #0003.
+ */
+export function expectBriefHasRequiredSections(run: RunArtifacts): void {
+  const brief = run.brief;
+  expect(brief, 'Ожидали brief.md на диске').toBeTruthy();
+  const required = [
+    '## Проблема',
+    '## Целевой пользователь и сценарий',
+    '## User stories',
+    '## Acceptance criteria',
+    '## Не-цели',
+    '## Связанные артефакты kb',
+  ];
+  for (const section of required) {
+    expect(brief, `В brief.md должна быть секция "${section}"`).toContain(section);
+  }
+  expect(brief, 'В brief.md НЕ должно быть секции "## Открытые вопросы"').not.toContain(
+    '## Открытые вопросы'
+  );
+}
+
 /** В knowledge-песочнице лежит файл с заданным содержимым. */
 export function expectKnowledgeFile(
   run: RunArtifacts,

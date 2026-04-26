@@ -6,6 +6,7 @@ import {
   registerToolLoopSmokeCommand,
   registerToolLoopSmokeResumer,
 } from '@ext/features/tool-loop-smoke/command';
+import { registerProductResumer } from '@ext/features/product-role';
 
 /**
  * Точка входа extension host.
@@ -58,6 +59,12 @@ export function activate(context: vscode.ExtensionContext) {
   // в `awaiting_user_input` с прошлого запуска VS Code.
   registerToolLoopSmokeResumer();
   context.subscriptions.push(registerToolLoopSmokeCommand(context));
+
+  // Resumer продактовой роли (#0003): нужен на каждом запуске, чтобы
+  // ран, оставшийся в `awaiting_user_input` после закрытия VS Code,
+  // мог возобновиться, когда пользователь введёт ответ. Регистрация
+  // не имеет side-эффектов помимо записи в реестр resumer'ов.
+  registerProductResumer();
 }
 
 /**
