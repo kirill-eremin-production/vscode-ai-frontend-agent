@@ -20,6 +20,13 @@ import type { PendingAsk, ToolEvent } from '@ext/entities/run/storage';
 export interface RunsCreateRequest {
   type: 'runs.create';
   prompt: string;
+  /**
+   * Пользовательский заголовок (US-2 / #0018). Опционален — если не
+   * передан или после trim пуст, extension сгенерит заголовок моделью
+   * (старое поведение). Ограничение длины проверяет UI; здесь принимаем
+   * как есть, чтобы не разъезжаться с фронтом.
+   */
+  title?: string;
 }
 
 /** Запросить актуальный список всех ранов (отрисовка сайдбара). */
@@ -125,6 +132,20 @@ export interface StateGetUiPrefsRequest {
   type: 'state.getUiPrefs';
 }
 
+/**
+ * Узнать, открыт ли в VS Code workspace (US-5). Без открытой папки
+ * `runs.create` всё равно упадёт на `getWorkspaceRoot`, но UI должен
+ * показать это превентивно — disabled-кнопкой «+ Новый ран» с tooltip
+ * «Откройте папку проекта», а не молчанием.
+ *
+ * Webview шлёт это при старте; extension отвечает `state.workspace.result`
+ * и дополнительно шлёт его же при изменении `workspaceFolders` без
+ * запроса от webview (push-обновление, чтобы кнопка тут же ожила).
+ */
+export interface StateGetWorkspaceRequest {
+  type: 'state.getWorkspace';
+}
+
 export type WebviewToExtensionMessage =
   | RunsCreateRequest
   | RunsListRequest
@@ -133,7 +154,8 @@ export type WebviewToExtensionMessage =
   | RunsUserMessageRequest
   | EditorOpenRequest
   | StateSetUiPrefRequest
-  | StateGetUiPrefsRequest;
+  | StateGetUiPrefsRequest
+  | StateGetWorkspaceRequest;
 
 /* ── Extension → Webview ─────────────────────────────────────────── */
 
@@ -267,13 +289,35 @@ export interface StateUiPrefsResult {
   prefs: Record<string, unknown>;
 }
 
+/**
+ * Текущее состояние workspace. Шлётся в ответ на `state.getWorkspace`
+ * и push'ом при изменении `workspaceFolders`. UI использует это, чтобы
+ * включать/выключать кнопку «+ Новый ран» без отдельного запроса.
+ */
+export interface StateWorkspaceResult {
+  type: 'state.workspace.result';
+  hasWorkspace: boolean;
+}
+
+/**
+ * Сигнал «создание рана отменено пользователем». Шлётся, когда
+ * `createRun` вернул undefined из-за отказа ввести ключ OpenRouter.
+ * Форма создания снимает loading-состояние, не теряя введённый текст —
+ * пользователь может попробовать ещё раз.
+ */
+export interface RunsCreateAbortedEvent {
+  type: 'runs.create.aborted';
+}
+
 export type ExtensionToWebviewMessage =
   | RunsListResult
   | RunsGetResult
   | RunsCreatedEvent
   | RunsErrorEvent
+  | RunsCreateAbortedEvent
   | RunsUpdatedEvent
   | RunsAskUserEvent
   | RunsMessageAppendedEvent
   | RunsToolAppendedEvent
-  | StateUiPrefsResult;
+  | StateUiPrefsResult
+  | StateWorkspaceResult;

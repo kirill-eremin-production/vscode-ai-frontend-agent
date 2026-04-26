@@ -62,6 +62,13 @@ export function wireRunMessages(
   // через `broadcast(...)`, прокидывается в этот webview как есть.
   const broadcastSub = onBroadcast(send);
 
+  // Push-обновление workspace-статуса при изменении папок (US-5 / #0018):
+  // если пользователь открыл/закрыл проект, кнопка «+ Новый ран» в UI
+  // должна тут же ожить/потухнуть без явного запроса от webview.
+  const workspaceSub = vscode.workspace.onDidChangeWorkspaceFolders(() => {
+    send({ type: 'state.workspace.result', hasWorkspace: hasOpenWorkspace() });
+  });
+
   const messageSub = webview.onDidReceiveMessage(async (raw: unknown) => {
     // На уровне типа доверяем, но валидируем минимально: если у
     // сообщения нет строкового `type` — это либо чужой источник,
@@ -78,10 +85,12 @@ export function wireRunMessages(
     try {
       switch (msg.type) {
         case 'runs.create': {
-          const meta = await createRun(context, msg.prompt);
+          const meta = await createRun(context, msg.prompt, msg.title);
           if (!meta) {
             // createRun вернул undefined => пользователь отказался
-            // вводить ключ. Это не ошибка, просто ничего не делаем.
+            // вводить ключ. Это не ошибка, но UI должен снять loading
+            // с кнопки «Запустить» (#0018), не теряя введённый текст.
+            send({ type: 'runs.create.aborted' });
             return;
           }
           send({ type: 'runs.created', meta });
@@ -149,6 +158,10 @@ export function wireRunMessages(
           await writeUiPref(context, msg.key, msg.value);
           return;
         }
+        case 'state.getWorkspace': {
+          send({ type: 'state.workspace.result', hasWorkspace: hasOpenWorkspace() });
+          return;
+        }
         default: {
           // Защита от не-исчерпанного switch: если в union добавится
           // новый вариант, а кейс забудут — TS подсветит ошибкой.
@@ -167,8 +180,19 @@ export function wireRunMessages(
     dispose: () => {
       broadcastSub.dispose();
       messageSub.dispose();
+      workspaceSub.dispose();
     },
   };
+}
+
+/**
+ * Открыта ли в VS Code хотя бы одна папка workspace. Все операции с
+ * ранами требуют этого (storage пишет в `<workspace>/.agents/...`),
+ * поэтому UI блокирует «+ Новый ран», пока папка не открыта (US-5).
+ */
+function hasOpenWorkspace(): boolean {
+  const folders = vscode.workspace.workspaceFolders;
+  return !!folders && folders.length > 0;
 }
 
 /**

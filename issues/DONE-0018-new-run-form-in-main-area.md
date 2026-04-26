@@ -1,8 +1,9 @@
 ---
 id: 0018
 title: Форма создания рана в main-area + empty state
-status: open
+status: done
 created: 2026-04-26
+closed: 2026-04-26
 ---
 
 ## Context

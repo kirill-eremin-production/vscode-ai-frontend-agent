@@ -77,7 +77,8 @@ async function ensureApiKey(context: vscode.ExtensionContext): Promise<string | 
  */
 export async function createRun(
   context: vscode.ExtensionContext,
-  prompt: string
+  prompt: string,
+  userTitle?: string
 ): Promise<RunMeta | undefined> {
   const trimmed = prompt.trim();
   if (trimmed.length === 0) {
@@ -87,7 +88,13 @@ export async function createRun(
   const apiKey = await ensureApiKey(context);
   if (!apiKey) return undefined;
 
-  const title = await generateTitle(apiKey, trimmed);
+  // Если пользователь явно указал заголовок (US-2 / #0018) — берём его
+  // и пропускаем дорогой LLM-вызов. Пустая строка после trim считается
+  // «не указано» и не отличается от undefined: иначе пользователь, очистив
+  // поле, получил бы ран без заголовка.
+  const trimmedTitle = userTitle?.trim();
+  const title =
+    trimmedTitle && trimmedTitle.length > 0 ? trimmedTitle : await generateTitle(apiKey, trimmed);
 
   const now = new Date().toISOString();
   const baseMeta = {

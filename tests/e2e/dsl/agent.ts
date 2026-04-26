@@ -111,11 +111,12 @@ export class AgentDriver {
   async createRun(prompt: string): Promise<void> {
     await this.openSidebar();
     const ui = agentWebviewContent(this.window);
-    // После #0017 composer создания рана уехал из сайдбара в main-area
-    // и показывается только в режиме `'new-run'`. Точка входа — IconButton
+    // После #0017 / #0018 composer создания рана живёт в main-area и
+    // показывается только в режиме `'new-run'`. Точка входа — IconButton
     // «Новый ран» в шапке списка (или на свёрнутой полосе): кликаем его,
-    // дожидаемся, пока MainArea отрендерит форму, и работаем со старыми
-    // селекторами `.run-create__*` (форма та же, просто переехала).
+    // дожидаемся, пока MainArea отрендерит NewRunForm, и заполняем
+    // только поле «Запрос» — заголовок остаётся пустым, чтобы тестовый
+    // путь шёл через дефолтную авто-генерацию (US-2).
     await ui.locator('button[aria-label="Новый ран"]').first().click();
     const input = ui.locator('.run-create__input');
     await input.waitFor({ state: 'visible', timeout: 5_000 });

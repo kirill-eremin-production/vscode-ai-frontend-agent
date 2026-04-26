@@ -64,12 +64,34 @@ interface RunsState {
   rightPanelCollapsed: boolean;
   /**
    * Режим main-area: 'run-details' — карточка выбранного рана,
-   * 'new-run' — форма создания нового рана (#0018, пока заглушка),
-   * 'empty' — приглашение «выберите ран». Контракт с #0017: переключается
-   * через `startNewRun()` и `selectRun()` (последний автоматически
-   * возвращает в 'run-details').
+   * 'new-run' — форма создания нового рана (#0018), 'empty' — приглашение
+   * «запустите команду агентов». Контракт с #0017: переключается через
+   * `startNewRun()` / `cancelNewRun()` / `selectRun()` (последний
+   * автоматически возвращает в 'run-details').
    */
   mainAreaMode: MainAreaMode;
+  /**
+   * IPC по созданию рана идёт асинхронно: между `runs.create` и
+   * `runs.created`/`runs.error`/`runs.create.aborted` форма должна
+   * показывать loading-состояние и блокировать повторный сабмит.
+   * Глобально, потому что форма одна, а её состояние тут устойчиво
+   * к ремаунтам.
+   */
+  createRunPending: boolean;
+  /**
+   * Сообщение последней ошибки `runs.create`. Форма показывает его под
+   * кнопкой и предлагает «Повторить». Сбрасывается при повторном сабмите,
+   * успешном создании, отмене формы и `clearCreateRunError()`.
+   */
+  createRunError: string | undefined;
+  /**
+   * Открыт ли в VS Code workspace (US-5). Без него `runs.create` сразу
+   * упадёт на `getWorkspaceRoot`, поэтому UI превентивно блокирует
+   * «+ Новый ран» с tooltip'ом «Откройте папку проекта». По умолчанию
+   * считаем true — иначе при холодном старте кнопка мигнёт disabled →
+   * enabled, пока не придёт ответ.
+   */
+  hasWorkspace: boolean;
 }
 
 export type MainAreaMode = 'run-details' | 'new-run' | 'empty';
@@ -86,6 +108,9 @@ const initialState: RunsState = {
   leftPanelCollapsed: false,
   rightPanelCollapsed: false,
   mainAreaMode: 'empty',
+  createRunPending: false,
+  createRunError: undefined,
+  hasWorkspace: true,
 };
 
 /**
@@ -140,14 +165,15 @@ function setState(updater: (prev: RunsState) => RunsState): void {
  * extension по тем же причинам, что и типы (см. `types.ts`).
  */
 type WebviewToExtensionMessage =
-  | { type: 'runs.create'; prompt: string }
+  | { type: 'runs.create'; prompt: string; title?: string }
   | { type: 'runs.list' }
   | { type: 'runs.get'; id: string; sessionId?: string }
   | { type: 'runs.setApiKey' }
   | { type: 'runs.user.message'; runId: string; text: string; finalize?: boolean }
   | { type: 'editor.open'; path: string }
   | { type: 'state.setUiPref'; key: string; value: unknown }
-  | { type: 'state.getUiPrefs' };
+  | { type: 'state.getUiPrefs' }
+  | { type: 'state.getWorkspace' };
 
 function send(message: WebviewToExtensionMessage): void {
   vscode.postMessage(message);
@@ -158,9 +184,28 @@ export function requestRunsList(): void {
   send({ type: 'runs.list' });
 }
 
-/** Создать новый ран по тексту запроса пользователя. */
-export function createRun(prompt: string): void {
-  send({ type: 'runs.create', prompt });
+/**
+ * Создать новый ран по тексту запроса пользователя. Опциональный
+ * `title` (US-2 / #0018): если пустой/undefined — extension сгенерит
+ * заголовок моделью. Локально выставляем `createRunPending=true`,
+ * чтобы форма мгновенно показала loading-состояние и заблокировала
+ * повторный сабмит. Pending снимается на `runs.created`,
+ * `runs.create.aborted` или `runs.error`.
+ */
+export function createRun(prompt: string, title?: string): void {
+  setState((prev) => ({
+    ...prev,
+    createRunPending: true,
+    createRunError: undefined,
+  }));
+  send({ type: 'runs.create', prompt, title });
+}
+
+/** Сбросить ошибку формы создания (например, при правке поля). */
+export function clearCreateRunError(): void {
+  setState((prev) =>
+    prev.createRunError === undefined ? prev : { ...prev, createRunError: undefined }
+  );
 }
 
 /** Открыть input box для ввода/обновления ключа OpenRouter. */
@@ -277,7 +322,27 @@ export function sendFinalizeSignal(runId: string): void {
  * что и до перехода в new-run.
  */
 export function startNewRun(): void {
-  setState((prev) => ({ ...prev, mainAreaMode: 'new-run' }));
+  setState((prev) => ({
+    ...prev,
+    mainAreaMode: 'new-run',
+    // Свежее открытие формы — без следов прошлых ошибок.
+    createRunError: undefined,
+  }));
+}
+
+/**
+ * Закрыть форму создания (#0018). Если у пользователя есть выбранный
+ * ран — возвращаемся в его детали; если нет — в empty state. Pending-
+ * состояние сбрасывать НЕ нужно: если IPC ещё в полёте, ответ всё равно
+ * прилетит — просто форма уже не показана. Но ошибку сбрасываем — она
+ * привязана к закрытой сессии формы.
+ */
+export function cancelNewRun(): void {
+  setState((prev) => ({
+    ...prev,
+    mainAreaMode: prev.selectedId ? 'run-details' : 'empty',
+    createRunError: undefined,
+  }));
 }
 
 /**
@@ -335,11 +400,13 @@ type ExtensionToWebviewMessage =
     }
   | { type: 'runs.created'; meta: RunMeta }
   | { type: 'runs.error'; message: string }
+  | { type: 'runs.create.aborted' }
   | { type: 'runs.updated'; meta: RunMeta }
   | { type: 'runs.askUser'; runId: string; ask: PendingAsk }
   | { type: 'runs.message.appended'; runId: string; sessionId: string; message: ChatMessage }
   | { type: 'runs.tool.appended'; runId: string; sessionId: string; event: ToolEvent }
-  | { type: 'state.uiPrefs.result'; prefs: Record<string, unknown> };
+  | { type: 'state.uiPrefs.result'; prefs: Record<string, unknown> }
+  | { type: 'state.workspace.result'; hasWorkspace: boolean };
 
 /**
  * Хук-подписчик, который должен быть установлен ровно один раз на
@@ -378,7 +445,23 @@ export function useRunsWiring(): void {
             mainAreaMode: 'run-details',
             selectedDetails: { meta: data.meta, chat: [], tools: [] },
             pendingAsk: undefined,
+            createRunPending: false,
+            createRunError: undefined,
           }));
+          return;
+        }
+        case 'runs.create.aborted': {
+          // Пользователь отменил ввод ключа OpenRouter — снимаем loading
+          // с формы, текст и заголовок остаются, ошибки нет (это не сбой).
+          setState((prev) => (prev.createRunPending ? { ...prev, createRunPending: false } : prev));
+          return;
+        }
+        case 'state.workspace.result': {
+          setState((prev) =>
+            prev.hasWorkspace === data.hasWorkspace
+              ? prev
+              : { ...prev, hasWorkspace: data.hasWorkspace }
+          );
           return;
         }
         case 'state.uiPrefs.result': {
@@ -540,8 +623,17 @@ export function useRunsWiring(): void {
         }
         case 'runs.error': {
           // Ошибки уже показывает extension через showErrorMessage.
-          // Здесь только логируем в консоль webview для отладки.
+          // Здесь дополнительно ловим её в форму создания, если она
+          // прилетела во время `runs.create` — иначе пользователь не
+          // увидел бы причину под кнопкой «Запустить» (#0018 acceptance).
+          // Эвристика «pending => относится к create» безопасна: другие
+          // потоки (user.message и т.п.) не выставляют createRunPending.
           console.error('[runs]', data.message);
+          setState((prev) =>
+            prev.createRunPending
+              ? { ...prev, createRunPending: false, createRunError: data.message }
+              : prev
+          );
           return;
         }
         default:
@@ -569,6 +661,9 @@ export function useRunsWiring(): void {
     // И параллельно — сохранённые UI-префы. Ответ перетрёт дефолты
     // выше, если пользователь раньше явно менял состояние сайдбаров.
     send({ type: 'state.getUiPrefs' });
+    // Опрашиваем workspace — без открытой папки кнопка «+ Новый ран»
+    // должна стоять disabled (#0018 / US-5).
+    send({ type: 'state.getWorkspace' });
 
     return () => window.removeEventListener('message', onMessage);
   }, []);
