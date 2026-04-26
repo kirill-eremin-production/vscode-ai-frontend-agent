@@ -66,6 +66,10 @@ export interface SessionSummary {
   status: RunStatus;
   createdAt: string;
   updatedAt: string;
+  /**
+   * Алиас на `prev[0]` (#0035). Источник правды теперь — массивные
+   * `prev`/`next`; поле живёт для обратной совместимости с UI до #0046.
+   */
   parentSessionId?: string;
   usage: UsageAggregate;
   /**
@@ -78,6 +82,20 @@ export interface SessionSummary {
    * из extension'а под условие `!participants` уже не попадают.
    */
   participants?: Participant[];
+  /**
+   * Метаданные встречи (#0035). На стороне webview оставлены опциональными
+   * по той же причине, что и `participants`: extension всегда нормализует
+   * их при чтении, но синтетические тестовые RunMeta'ы могут не задавать.
+   *
+   *  - `inputFrom` — роль/источник, инициировавший сессию (`'user'` для
+   *    корневой; для bridge — роль `participants[0]` родителя).
+   *  - `prev` — id родительских сессий (для линейной цепочки длина 1).
+   *  - `next` — id дочерних сессий (заполняется extension'ом из
+   *    обратного индекса).
+   */
+  inputFrom?: string;
+  prev?: string[];
+  next?: string[];
 }
 
 /**

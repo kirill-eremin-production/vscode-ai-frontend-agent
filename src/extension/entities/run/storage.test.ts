@@ -359,6 +359,204 @@ describe('participants — массив произвольной длины (#00
   });
 });
 
+/**
+ * #0035: метаданные встречи на сессии — `inputFrom`, `prev[]`, `next[]`.
+ *
+ * Покрытие:
+ *  - линейная цепочка user → product → architect: проверка prev/next/inputFrom
+ *    на всех трёх сессиях после createSession;
+ *  - ветвление: одна родительская сессия порождает двух детей —
+ *    `next.length === 2`, у обоих детей prev указывает на родителя;
+ *  - read-time normalization: legacy session-meta без новых полей
+ *    восстанавливает prev (из parentSessionId) и inputFrom (по родителю),
+ *    next пересчитывается обратным индексом по списку сессий рана.
+ */
+describe('session meeting metadata: inputFrom/prev/next (#0035)', () => {
+  it('линейная цепочка: проставляет prev/next/inputFrom у всех трёх сессий', async () => {
+    const runId = freshRunId();
+    // Корневая user-agent сессия — там продакт работает с пользователем.
+    const initial = await initTestRun(runId);
+    const userRoot = initial.activeSessionId;
+
+    // Уровень 1: продакт передал бриф архитектору. Bridge product↔architect
+    // — это handoff, родитель = userRoot, инициатор входа = product (потому
+    // что `participants[0]` userRoot — это user, но именно продакт «отдал
+    // бриф». В тесте моделируем реальную раскладку: участник [0] корневой
+    // — `user`, поэтому inputFrom детской bridge-сессии = 'user').
+    // Здесь проверяем именно правило AC: inputFrom = роль participants[0]
+    // родителя. У userRoot participants[0] = user → дочерняя получает 'user'.
+    const bridgeProduct = await createSession(runId, {
+      kind: 'agent-agent',
+      participants: [
+        { kind: 'agent', role: 'product' },
+        { kind: 'agent', role: 'architect' },
+      ],
+      prev: [userRoot],
+      status: 'running',
+    });
+
+    // Уровень 2: уже архитектор инициировал следующий шаг. Семантически
+    // — handoff к программисту. Родитель = bridgeProduct, у которого
+    // participants[0] = agent product → inputFrom = 'product'.
+    const bridgeArchitect = await createSession(runId, {
+      kind: 'agent-agent',
+      participants: [
+        { kind: 'agent', role: 'architect' },
+        { kind: 'agent', role: 'programmer' },
+      ],
+      prev: [bridgeProduct.session.id],
+      status: 'running',
+    });
+
+    // Перечитываем мету целиком, чтобы взять normalized снимок.
+    const meta = await readMeta(runId);
+    const root = meta?.sessions.find((session) => session.id === userRoot);
+    const bp = meta?.sessions.find((session) => session.id === bridgeProduct.session.id);
+    const ba = meta?.sessions.find((session) => session.id === bridgeArchitect.session.id);
+
+    // Корневая: prev пуст, в next попал bridgeProduct, inputFrom='user'.
+    expect(root?.prev).toEqual([]);
+    expect(root?.next).toEqual([bridgeProduct.session.id]);
+    expect(root?.inputFrom).toBe('user');
+
+    // bridgeProduct: prev=[userRoot], next=[bridgeArchitect], inputFrom
+    // = роль participants[0] родителя userRoot = 'user' (см. участники).
+    expect(bp?.prev).toEqual([userRoot]);
+    expect(bp?.next).toEqual([bridgeArchitect.session.id]);
+    expect(bp?.inputFrom).toBe('user');
+
+    // bridgeArchitect: prev=[bridgeProduct], next=[], inputFrom='product'.
+    expect(ba?.prev).toEqual([bridgeProduct.session.id]);
+    expect(ba?.next).toEqual([]);
+    expect(ba?.inputFrom).toBe('product');
+  });
+
+  it('ветвление: один родитель → двое детей, у родителя next.length === 2', async () => {
+    const runId = freshRunId();
+    const initial = await initTestRun(runId);
+    const root = initial.activeSessionId;
+
+    const childA = await createSession(runId, {
+      kind: 'agent-agent',
+      participants: [
+        { kind: 'agent', role: 'product' },
+        { kind: 'agent', role: 'architect' },
+      ],
+      prev: [root],
+      status: 'running',
+    });
+    const childB = await createSession(runId, {
+      kind: 'agent-agent',
+      participants: [
+        { kind: 'agent', role: 'product' },
+        { kind: 'agent', role: 'programmer' },
+      ],
+      prev: [root],
+      status: 'running',
+    });
+
+    const meta = await readMeta(runId);
+    const rootSummary = meta?.sessions.find((session) => session.id === root);
+    expect(rootSummary?.next).toHaveLength(2);
+    expect(rootSummary?.next).toEqual(
+      expect.arrayContaining([childA.session.id, childB.session.id])
+    );
+
+    // У обоих детей prev указывает на корень.
+    const childASummary = meta?.sessions.find((session) => session.id === childA.session.id);
+    const childBSummary = meta?.sessions.find((session) => session.id === childB.session.id);
+    expect(childASummary?.prev).toEqual([root]);
+    expect(childBSummary?.prev).toEqual([root]);
+
+    // Родительский session-meta тоже знает про обоих детей — это ключевая
+    // гарантия write-time у родителя (а не только у run-meta).
+    const rootMeta = await readSessionMeta(runId, root);
+    expect(rootMeta?.next).toEqual(expect.arrayContaining([childA.session.id, childB.session.id]));
+  });
+
+  it('read-time normalization: legacy session-meta без полей восстанавливает prev/inputFrom/next', async () => {
+    const runId = freshRunId();
+    const initial = await initTestRun(runId);
+    const root = initial.activeSessionId;
+    // Создадим дочернюю сессию обычным путём — а потом подменим её мету
+    // на легаси-формат (только parentSessionId, без массивов и inputFrom),
+    // как это лежало бы у ранов до #0035.
+    const child = await createSession(runId, {
+      kind: 'agent-agent',
+      participants: [
+        { kind: 'agent', role: 'product' },
+        { kind: 'agent', role: 'architect' },
+      ],
+      prev: [root],
+      status: 'running',
+    });
+
+    // Подменяем session-meta дочерней на legacy-объект без новых полей.
+    const childMetaPath = path.join(
+      globalThis.__TEST_WORKSPACE__,
+      '.agents',
+      'runs',
+      runId,
+      'sessions',
+      child.session.id,
+      'meta.json'
+    );
+    const legacyChild: Record<string, unknown> = {
+      id: child.session.id,
+      runId,
+      kind: 'agent-agent',
+      participants: child.session.participants,
+      parentSessionId: root,
+      status: 'running',
+      createdAt: child.session.createdAt,
+      updatedAt: child.session.updatedAt,
+      usage: child.session.usage,
+    };
+    await fs.writeFile(childMetaPath, JSON.stringify(legacyChild, null, 2), 'utf8');
+
+    // Также подменяем summary дочерней в run-meta — убираем prev/next/inputFrom.
+    const runMetaPath = path.join(
+      globalThis.__TEST_WORKSPACE__,
+      '.agents',
+      'runs',
+      runId,
+      'meta.json'
+    );
+    const rawRun = JSON.parse(await fs.readFile(runMetaPath, 'utf8')) as {
+      sessions: Array<Record<string, unknown>>;
+    };
+    for (const summary of rawRun.sessions) {
+      if (summary.id === child.session.id) {
+        delete summary.prev;
+        delete summary.next;
+        delete summary.inputFrom;
+        summary.parentSessionId = root;
+      }
+    }
+    await fs.writeFile(runMetaPath, JSON.stringify(rawRun, null, 2), 'utf8');
+
+    // Чтение через readSessionMeta должно восстановить prev/inputFrom/next
+    // на одиночном уровне (без знания о соседях): prev из parentSessionId,
+    // inputFrom — фолбэк 'user', next — пустой массив.
+    const childRead = await readSessionMeta(runId, child.session.id);
+    expect(childRead?.prev).toEqual([root]);
+    expect(childRead?.next).toEqual([]);
+    // Без знания о родителе fallback = 'user'.
+    expect(childRead?.inputFrom).toBe('user');
+
+    // Чтение через readMeta уточняет inputFrom по родителю и пересчитывает
+    // next родителя обратным индексом.
+    const meta = await readMeta(runId);
+    const rootSummary = meta?.sessions.find((session) => session.id === root);
+    const childSummary = meta?.sessions.find((session) => session.id === child.session.id);
+    // У root participants[0] = user → дочерний inputFrom уточняется в 'user'
+    // (совпадает с fallback, но это уже cross-session derivation).
+    expect(childSummary?.inputFrom).toBe('user');
+    expect(childSummary?.prev).toEqual([root]);
+    expect(rootSummary?.next).toEqual([child.session.id]);
+  });
+});
+
 describe('addUsageToActiveSession (#0008)', () => {
   it('накапливает токены и стоимость в активной сессии и в RunMeta', async () => {
     const runId = freshRunId();

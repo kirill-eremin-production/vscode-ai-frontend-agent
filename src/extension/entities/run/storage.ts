@@ -159,6 +159,9 @@ function toSummary(session: SessionMeta): SessionSummary {
     parentSessionId: session.parentSessionId,
     usage: session.usage,
     participants: session.participants,
+    inputFrom: session.inputFrom,
+    prev: session.prev,
+    next: session.next,
   };
 }
 
@@ -233,13 +236,70 @@ function normalizeParticipants(
 }
 
 /**
+ * Восстановить `prev` и `next` из legacy-полей.
+ *
+ * До #0035 родительство хранилось одним полем `parentSessionId`, а
+ * списка дочерних сессий не было вовсе (UI вычислял на лету). После
+ * #0035 источник правды — `prev[]`/`next[]`; `parentSessionId` живёт
+ * как алиас для обратной совместимости (см. SessionMeta).
+ *
+ * Правила нормализации (на уровне одной сессии, без знания о соседях):
+ *  - если массив `prev` уже валидный — оставляем;
+ *  - иначе берём `parentSessionId` (если есть) → `[parentSessionId]`,
+ *    в противном случае — пустой массив (корневая сессия);
+ *  - `next` — пустой массив. Полная инверсия по всем сессиям рана
+ *    делается отдельным шагом в `normalizeRunSessionsList`.
+ */
+function readPrevFromLegacy(raw: { prev?: unknown; parentSessionId?: unknown }): string[] {
+  if (Array.isArray(raw.prev) && raw.prev.every((entry) => typeof entry === 'string')) {
+    return raw.prev as string[];
+  }
+  if (typeof raw.parentSessionId === 'string' && raw.parentSessionId.length > 0) {
+    return [raw.parentSessionId];
+  }
+  return [];
+}
+
+function readNextFromLegacy(raw: { next?: unknown }): string[] {
+  if (Array.isArray(raw.next) && raw.next.every((entry) => typeof entry === 'string')) {
+    return raw.next as string[];
+  }
+  return [];
+}
+
+/**
+ * Безопасный фолбэк `inputFrom` для одиночной сессии. Без знания о
+ * родителе вывести роль автора входа невозможно — возвращаем `'user'`
+ * как корневой источник по умолчанию (#0035). Уточнение по родителю
+ * выполняется в `normalizeRunSessionsList`.
+ */
+function readInputFromLegacy(raw: { inputFrom?: unknown }): string {
+  if (typeof raw.inputFrom === 'string' && raw.inputFrom.length > 0) {
+    return raw.inputFrom;
+  }
+  return 'user';
+}
+
+/**
  * Привести SessionMeta из старого формата к актуальному. Идемпотентно:
- * если participants уже корректный массив — возвращает исходный объект.
+ * если participants/prev/next/inputFrom уже корректные — возвращает
+ * исходный объект (по ссылке).
  */
 function normalizeSessionMeta(raw: SessionMeta): SessionMeta {
-  const participants = normalizeParticipants(raw as unknown as Record<string, unknown>);
-  if (raw.participants === participants) return raw;
-  return { ...raw, participants };
+  const rawRecord = raw as unknown as Record<string, unknown>;
+  const participants = normalizeParticipants(rawRecord);
+  const prev = readPrevFromLegacy(rawRecord);
+  const next = readNextFromLegacy(rawRecord);
+  const inputFrom = readInputFromLegacy(rawRecord);
+  if (
+    raw.participants === participants &&
+    raw.prev === prev &&
+    raw.next === next &&
+    raw.inputFrom === inputFrom
+  ) {
+    return raw;
+  }
+  return { ...raw, participants, prev, next, inputFrom };
 }
 
 /**
@@ -247,11 +307,95 @@ function normalizeSessionMeta(raw: SessionMeta): SessionMeta {
  * До #0034 поле `participants` в summary было опциональным — после миграции
  * всегда массив длины ≥ 1. Используется в `readMeta`, чтобы webview не
  * получал summary без участников (часть UI завязана на их наличие).
+ *
+ * #0035 добавляет `prev`/`next`/`inputFrom`: для legacy-summary без этих
+ * полей восстанавливаем их по тем же правилам, что и в SessionMeta.
  */
 function normalizeSessionSummary(raw: SessionSummary): SessionSummary {
-  const participants = normalizeParticipants(raw as unknown as Record<string, unknown>);
-  if (raw.participants === participants) return raw;
-  return { ...raw, participants };
+  const rawRecord = raw as unknown as Record<string, unknown>;
+  const participants = normalizeParticipants(rawRecord);
+  const prev = readPrevFromLegacy(rawRecord);
+  const next = readNextFromLegacy(rawRecord);
+  const inputFrom = readInputFromLegacy(rawRecord);
+  if (
+    raw.participants === participants &&
+    raw.prev === prev &&
+    raw.next === next &&
+    raw.inputFrom === inputFrom
+  ) {
+    return raw;
+  }
+  return { ...raw, participants, prev, next, inputFrom };
+}
+
+/**
+ * Извлечь роль автора входа из участника. `user` отдаём как литерал
+ * `'user'`; для агента — его роль (`product`/`architect`/...).
+ */
+function participantToInputFrom(participant: Participant): string {
+  return participant.kind === 'user' ? 'user' : participant.role;
+}
+
+/**
+ * Дополнить нормализацию `next`/`inputFrom` информацией о всех сессиях
+ * рана. Делается одним проходом при `readMeta`/`listAllMeta`:
+ *
+ *  - `next` каждой сессии переcчитывается обратным индексом по `prev`
+ *    всех сессий рана. Это страхует от рассинхрона на legacy-данных,
+ *    где `next` либо отсутствует, либо устарел (запись родителя могла
+ *    не дойти до диска до краша). Для свежих ранов результат идентичен
+ *    тому, что лежит на диске, — пересчёт идемпотентен.
+ *  - `inputFrom` уточняется через родительские `participants`: для
+ *    bridge/handoff-сессии = роль `participants[0]` родителя, для
+ *    корневой остаётся `'user'`. Если родитель не найден в списке
+ *    (битые ссылки) — оставляем то, что было (или фолбэк `'user'`).
+ */
+function normalizeRunSessionsList(sessions: SessionSummary[]): SessionSummary[] {
+  // Шаг 1: собираем родительские summary в индекс по id.
+  const byId = new Map<string, SessionSummary>();
+  for (const session of sessions) byId.set(session.id, session);
+
+  // Шаг 2: обратный индекс prev → дети, для пересчёта `next`.
+  const childrenByParent = new Map<string, string[]>();
+  for (const session of sessions) {
+    for (const parentId of session.prev) {
+      const list = childrenByParent.get(parentId) ?? [];
+      list.push(session.id);
+      childrenByParent.set(parentId, list);
+    }
+  }
+
+  // Шаг 3: для каждой сессии — пересчёт next и уточнение inputFrom.
+  return sessions.map((session) => {
+    const next = childrenByParent.get(session.id) ?? [];
+    let inputFrom = session.inputFrom;
+    const parentId = session.prev[0];
+    if (parentId !== undefined) {
+      const parent = byId.get(parentId);
+      // participants[0] — устоявшийся «инициатор» по правилам #0034:
+      // первый элемент остаётся стабильным при добавлении новых
+      // участников через addParticipant (push в конец). Если у родителя
+      // participants пуст (битые legacy-данные) — используем то, что
+      // было записано на диске, чтобы не затереть валидное значение
+      // фолбэком.
+      if (parent && parent.participants.length > 0) {
+        inputFrom = participantToInputFrom(parent.participants[0]);
+      }
+    } else {
+      // Корневая сессия (без родителей) всегда `'user'` — это её
+      // инициатор по определению ленты встреч (#0029).
+      inputFrom = 'user';
+    }
+
+    if (
+      session.next.length === next.length &&
+      session.next.every((id, index) => id === next[index]) &&
+      session.inputFrom === inputFrom
+    ) {
+      return session;
+    }
+    return { ...session, next, inputFrom };
+  });
 }
 
 /* ── Run meta read/write ────────────────────────────────────────── */
@@ -269,9 +413,13 @@ export async function readMeta(runId: string): Promise<RunMeta | undefined> {
   try {
     const raw = await fs.readFile(filePath, 'utf8');
     const parsed = JSON.parse(raw) as RunMeta;
-    const sessions = Array.isArray(parsed.sessions)
+    const summaries = Array.isArray(parsed.sessions)
       ? parsed.sessions.map(normalizeSessionSummary)
       : [];
+    // Второй проход — кросс-сессионная нормализация next/inputFrom (#0035):
+    // отдельная фаза, потому что её аргумент — весь список сессий рана,
+    // а не одиночный summary. См. `normalizeRunSessionsList`.
+    const sessions = normalizeRunSessionsList(summaries);
     return { ...parsed, sessions };
   } catch {
     return undefined;
@@ -346,6 +494,11 @@ export async function initRunDir(
     runId: meta.id,
     kind: initial.kind,
     participants: initial.participants,
+    // Корневая сессия рана: входа извне нет, инициатор — пользователь;
+    // prev/next пусты до первого handoff'а (#0035).
+    inputFrom: 'user',
+    prev: [],
+    next: [],
     status,
     createdAt: now,
     updatedAt: now,
@@ -382,7 +535,18 @@ export async function createSession(
   params: {
     kind: SessionKind;
     participants: Participant[];
+    /**
+     * Родительская сессия (legacy-алиас на `prev[0]`). Оставлен для
+     * обратной совместимости с вызовами до #0035; новые сценарии могут
+     * использовать `prev`. Если переданы оба — `prev` приоритетнее.
+     */
     parentSessionId?: string;
+    /**
+     * Список родительских сессий (#0035). Длина 1 для обычной handoff/
+     * compact-цепочки; задел под слияние веток в одну встречу. По
+     * умолчанию вычисляется из `parentSessionId` (для совместимости).
+     */
+    prev?: string[];
     status?: RunStatus;
   }
 ): Promise<{ run: RunMeta; session: SessionMeta }> {
@@ -390,6 +554,22 @@ export async function createSession(
   if (!run) {
     throw new RunStorageError(`Ран ${runId} не найден — нельзя создать сессию`);
   }
+
+  // prev — основной источник правды; parentSessionId оставляем как
+  // вычисляемый алиас, чтобы старый UI/storage-код не сломался.
+  const prev = params.prev ?? (params.parentSessionId ? [params.parentSessionId] : []);
+  const parentSessionId = prev[0];
+
+  // inputFrom выводится из участника-инициатора родительской сессии
+  // (`participants[0]`): продакт передал бриф → 'product', архитектор
+  // план → 'architect'. Для корневой сессии и битых ссылок — 'user'.
+  const parentSummary = parentSessionId
+    ? run.sessions.find((session) => session.id === parentSessionId)
+    : undefined;
+  const inputFrom =
+    parentSummary && parentSummary.participants.length > 0
+      ? participantToInputFrom(parentSummary.participants[0])
+      : 'user';
 
   const sessionId = generateSessionId();
   const sessionDir = getSessionDir(runId, sessionId);
@@ -401,7 +581,10 @@ export async function createSession(
     runId,
     kind: params.kind,
     participants: params.participants,
-    parentSessionId: params.parentSessionId,
+    parentSessionId,
+    inputFrom,
+    prev,
+    next: [],
     status: params.status ?? 'draft',
     createdAt: now,
     updatedAt: now,
@@ -410,9 +593,34 @@ export async function createSession(
   await writeJsonAtomic(path.join(sessionDir, META_FILE), sessionMeta);
   await fs.writeFile(path.join(sessionDir, CHAT_FILE), '', { flag: 'a' });
 
-  const sessions = [...run.sessions, toSummary(sessionMeta)];
+  // Обновляем `next` у каждой родительской сессии: и в её session-meta
+  // на диске, и в summary внутри run-meta. Делаем явно, не полагаясь
+  // на read-time нормализацию: следующий читатель должен видеть полный
+  // граф сразу после write — это ключевая гарантия #0035 для UI журнала.
+  for (const parentId of prev) {
+    await appendNextToParent(runId, parentId, sessionId);
+  }
+
+  // Перечитываем run после правок родителей, чтобы summaries с
+  // обновлённым `updatedAt` (родителю обновили session-meta) попали
+  // в финальный RunMeta.
+  const refreshedRun = (await readMeta(runId)) ?? run;
+  const newSummary = toSummary(sessionMeta);
+  // В summaries родителей в run-meta пишем `next` явно: read-time
+  // нормализация при следующем `readMeta` всё равно пересчитает их
+  // обратным индексом, но broadcast возвращает ровно эту RunMeta —
+  // UI должен увидеть новый граф сразу, не дожидаясь повторного чтения.
+  const prevSet = new Set(prev);
+  const sessions = [
+    ...refreshedRun.sessions.map((session) =>
+      prevSet.has(session.id) && !session.next.includes(sessionId)
+        ? { ...session, next: [...session.next, sessionId] }
+        : session
+    ),
+    newSummary,
+  ];
   const updatedRun: RunMeta = {
-    ...run,
+    ...refreshedRun,
     status: sessionMeta.status,
     activeSessionId: sessionId,
     sessions,
@@ -421,6 +629,34 @@ export async function createSession(
   };
   await writeMeta(updatedRun);
   return { run: updatedRun, session: sessionMeta };
+}
+
+/**
+ * Идемпотентно добавить id дочерней сессии в `next` родителя:
+ *  - читает session-meta родителя;
+ *  - если в `next` уже есть этот id — ничего не делает;
+ *  - иначе: пушит и перезаписывает session-meta атомарно (новый
+ *    `updatedAt` тоже бьётся — это полноценный апдейт сессии).
+ *
+ * Не ломает RunMeta самостоятельно: вызывающий `createSession` после
+ * всех правок родителей перечитывает RunMeta и собирает финальный
+ * snapshot. Это позволяет писать одной транзакцией только один файл
+ * meta.json рана (атомарность временных гарантий).
+ */
+async function appendNextToParent(
+  runId: string,
+  parentSessionId: string,
+  childSessionId: string
+): Promise<void> {
+  const parent = await readSessionMeta(runId, parentSessionId);
+  if (!parent) return;
+  if (parent.next.includes(childSessionId)) return;
+  const updatedParent: SessionMeta = {
+    ...parent,
+    next: [...parent.next, childSessionId],
+    updatedAt: new Date().toISOString(),
+  };
+  await writeJsonAtomic(path.join(getSessionDir(runId, parentSessionId), META_FILE), updatedParent);
 }
 
 /* ── Session meta read/update ───────────────────────────────────── */
