@@ -2,7 +2,7 @@ import { Component, memo, useEffect, useMemo, useRef, useState } from 'react';
 import type { ReactNode } from 'react';
 import clsx from 'clsx';
 import { AlertCircle, CheckCircle2, HelpCircle, User as UserIcon, Wrench } from 'lucide-react';
-import type { RunMeta, ToolEvent } from '@shared/runs/types';
+import type { ChatMessage, RunMeta, ToolEvent } from '@shared/runs/types';
 import { Avatar, LoadingState, type Role } from '@shared/ui';
 import {
   describeRunActivity,
@@ -19,6 +19,7 @@ import {
 } from '../layout';
 import { ownerRoleOfActiveSession, selectActiveSessionForRole } from '../select-active-session';
 import { resolveCubeDrillSession, resolveUserDrillSession } from '../drill-resolver';
+import { cubeStateFor, type CubeState } from '../cube-state';
 
 /**
  * Канвас команды агентов в виде org-chart'а (#0042).
@@ -40,6 +41,13 @@ import { resolveCubeDrillSession, resolveUserDrillSession } from '../drill-resol
 export interface RunCanvasProps {
   meta: RunMeta;
   tools: ToolEvent[];
+  /**
+   * Чат активной сессии. Нужен для определения cube-state (#0044):
+   * пульсация кубика «working» считается из «последнего сообщения не от
+   * этой роли». Опционален — если webview ещё не подгрузил детали,
+   * рендерим как пустой чат, и все кубики получают `idle`.
+   */
+  chat?: ChatMessage[];
   onSwitchToChat?: () => void;
   /** Drill-in (#0026): открыть выбранную сессию на вкладке «Чат». */
   onDrillIn?: (sessionId: string) => void;
@@ -53,17 +61,28 @@ export function RunCanvas(props: RunCanvasProps) {
   );
 }
 
-function RunCanvasInner({ meta, tools, onDrillIn }: RunCanvasProps) {
+function RunCanvasInner({ meta, tools, chat, onDrillIn }: RunCanvasProps) {
   const layout = useMemo(() => layoutCanvas(meta), [meta]);
   // Один тикер на канвас — перерасчёт «N мин назад».
   // 60 сек хватает: меньшая разрешающая способность чем у formatRelativeTime.
   const now = useNowTicker(60_000);
   return (
     <div className="run-canvas relative h-full w-full overflow-hidden bg-[var(--vscode-editor-background)]">
-      <CanvasViewport layout={layout} meta={meta} tools={tools} now={now} onDrillIn={onDrillIn} />
+      <CanvasViewport
+        layout={layout}
+        meta={meta}
+        tools={tools}
+        chat={chat ?? EMPTY_CHAT}
+        now={now}
+        onDrillIn={onDrillIn}
+      />
     </div>
   );
 }
+
+// Стабильная пустая ссылка — чтобы memo'нутые ноды не пересоздавались
+// каждый рендер из-за «нового» массива по умолчанию.
+const EMPTY_CHAT: ChatMessage[] = [];
 
 /**
  * Возвращает «текущее время» в виде Date, обновляемое каждые `intervalMs`.
@@ -86,6 +105,7 @@ function CanvasViewport(props: {
   layout: CanvasLayout;
   meta: RunMeta;
   tools: ToolEvent[];
+  chat: ChatMessage[];
   now: Date;
   onDrillIn?: (sessionId: string) => void;
 }) {
@@ -240,6 +260,7 @@ function CanvasViewport(props: {
               key={node.id}
               node={node}
               activity={activityForNode(node, props.meta, props.tools)}
+              cubeState={cubeStateFor(node.role, { meta: props.meta, chat: props.chat })}
               now={props.now}
               drillSessionId={drillSessionId}
               onDrillIn={
@@ -359,6 +380,13 @@ const CanvasUserView = memo(function CanvasUserView(props: CanvasUserViewProps) 
 interface CanvasNodeViewProps {
   node: CanvasNode;
   activity: RunActivity;
+  /**
+   * Упрощённое состояние кубика (#0044). Драйвит визуальное
+   * выделение (рамка/пульсация) и e2e-контракт `data-canvas-cube-state`.
+   * Caption под кубиком берётся из `activity.label` — в нём, например,
+   * имя текущего тула («Архитектор: вызов `kb.list`…»).
+   */
+  cubeState: CubeState;
   now: Date;
   /**
    * Drill-in (#0026): id сессии, в которую уйдёт клик/Enter. Используется
@@ -379,14 +407,18 @@ interface CanvasNodeViewProps {
  * Все `data-canvas-*`-атрибуты — стабильные хуки для e2e (TC-37+).
  */
 const CanvasNodeView = memo(function CanvasNodeView(props: CanvasNodeViewProps) {
-  const { node, activity, now, drillSessionId, onDrillIn } = props;
-  const tone = toneForKind(activity.kind);
-  const showSpinner = activity.kind === 'thinking' || activity.kind === 'tool';
+  const { node, activity, cubeState, now, drillSessionId, onDrillIn } = props;
+  const tone = toneForCubeState(cubeState, activity.kind);
+  // Спиннер показываем когда кубик «working» (любой подкатегории —
+  // thinking/tool — или просто ждём ответа роли по последнему сообщению).
+  const showSpinner =
+    cubeState === 'working' || activity.kind === 'thinking' || activity.kind === 'tool';
   const relTime = node.lastActivityAt ? formatRelativeTime(node.lastActivityAt, now) : undefined;
   return (
     <g
       data-canvas-role={node.role}
       data-canvas-activity={activity.kind}
+      data-canvas-cube-state={cubeState}
       data-canvas-drill-session={drillSessionId}
       data-canvas-level={node.level}
       transform={`translate(${node.x}, ${node.y})`}
@@ -412,6 +444,24 @@ const CanvasNodeView = memo(function CanvasNodeView(props: CanvasNodeViewProps) 
         stroke={tone.borderColor}
         strokeWidth={tone.borderWidth}
       />
+      {/*
+       * Пульсирующий индикатор «working» (#0044). Маленький кружок в
+       * правом-верхнем углу кубика, мигает за счёт SVG-анимации opacity.
+       * Намеренно SVG-нативная анимация, а не CSS animate-pulse: clsx
+       * на foreignObject/iconе работает, но animateDOM-нода стабильнее
+       * визуально на всех ширинах viewBox (zoom не «дёргает» её ритм).
+       */}
+      {cubeState === 'working' && (
+        <circle
+          data-canvas-cube-pulse
+          cx={node.width - 10}
+          cy={10}
+          r={4}
+          fill="var(--vscode-charts-blue, var(--vscode-focusBorder))"
+        >
+          <animate attributeName="opacity" values="0.3;1;0.3" dur="1.4s" repeatCount="indefinite" />
+        </circle>
+      )}
       {/* Цветная полоса акцента слева — по роли */}
       <rect
         x={0}
@@ -453,24 +503,36 @@ interface NodeTone {
   borderWidth: number;
 }
 
-function toneForKind(kind: RunActivityKind): NodeTone {
-  switch (kind) {
-    case 'failed':
-      return {
-        borderColor: 'var(--vscode-inputValidation-errorBorder, var(--vscode-errorForeground))',
-        borderWidth: 2,
-      };
-    case 'awaiting_user':
-      return {
-        borderColor: 'var(--vscode-inputValidation-warningBorder, var(--vscode-charts-yellow))',
-        borderWidth: 2,
-      };
-    default:
-      return {
-        borderColor: 'var(--border-subtle, var(--vscode-input-border, #444))',
-        borderWidth: 1,
-      };
+/**
+ * Цвет/толщина рамки кубика. Cube-state (#0044) — основной драйвер:
+ * `awaiting_user` всегда даёт жёлтую рамку, `working` — синюю акцентную,
+ * `idle` — нейтральную. Дополнительно `failed` из детального activity
+ * перекрывает idle красной рамкой: cube-state не различает done/failed,
+ * но визуально красный сигнал об ошибке мы хотим сохранить.
+ */
+function toneForCubeState(cubeState: CubeState, activityKind: RunActivityKind): NodeTone {
+  if (cubeState === 'awaiting_user') {
+    return {
+      borderColor: 'var(--vscode-inputValidation-warningBorder, var(--vscode-charts-yellow))',
+      borderWidth: 2,
+    };
   }
+  if (cubeState === 'working') {
+    return {
+      borderColor: 'var(--vscode-focusBorder, var(--vscode-charts-blue))',
+      borderWidth: 2,
+    };
+  }
+  if (activityKind === 'failed') {
+    return {
+      borderColor: 'var(--vscode-inputValidation-errorBorder, var(--vscode-errorForeground))',
+      borderWidth: 2,
+    };
+  }
+  return {
+    borderColor: 'var(--border-subtle, var(--vscode-input-border, #444))',
+    borderWidth: 1,
+  };
 }
 
 /**

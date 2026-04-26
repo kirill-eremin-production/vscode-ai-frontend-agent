@@ -8,3 +8,5 @@ export { RunCanvas } from './ui/RunCanvas';
 export type { RunCanvasProps } from './ui/RunCanvas';
 export { layoutCanvas } from './layout';
 export type { CanvasNode, CanvasReportingLine, CanvasLayout, CanvasUserElement } from './layout';
+export { cubeStateFor } from './cube-state';
+export type { CubeState, CubeRunState } from './cube-state';

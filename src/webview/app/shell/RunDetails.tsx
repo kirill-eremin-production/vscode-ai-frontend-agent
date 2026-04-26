@@ -118,6 +118,7 @@ export function RunDetails() {
           <RunCanvas
             meta={meta}
             tools={tools}
+            chat={chat}
             onSwitchToChat={() => setRunDetailsTab(meta.id, 'chat')}
             onDrillIn={(sessionId) => drillIntoSession(meta.id, sessionId)}
           />
