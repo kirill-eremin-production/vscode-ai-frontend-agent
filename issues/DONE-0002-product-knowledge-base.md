@@ -2,8 +2,24 @@
 id: 0002
 title: База знаний продакта — расположение, формат, конвенции
 type: infrastructure
-status: open
+status: done
 created: 2026-04-26
+completed: 2026-04-26
+---
+
+## Outcome
+
+Реализовано в [src/extension/entities/knowledge/](src/extension/entities/knowledge/):
+
+- [schema.ts](src/extension/entities/knowledge/schema.ts) — реестр ролей и их поддиректорий (`KNOWLEDGE_SCHEMA`), пока только `product` с пятью папками из acceptance criteria. Расширяется добавлением роли в реестр + типе `KnowledgeRole`.
+- [path.ts](src/extension/entities/knowledge/path.ts) — `resolveRolePath({ role, subdir, file })`: проверяет схему (роль, поддиректорию, имя файла — только `.md`, без слешей и скрытых) и делегирует sandbox существующему `resolveKnowledgePath` из `entities/run/storage`.
+- [product-readme.ts](src/extension/entities/knowledge/product-readme.ts) — текст `README.md` для `.agents/knowledge/product/`. Хранится строкой в .ts (а не отдельным .md), потому что extension собирается одним bundle'ом — не нужно учить bundler копировать ассеты. Реальный README.md в workspace создаст init-скрипт продакта в #0003 (см. open question).
+- Тесты в [path.test.ts](src/extension/entities/knowledge/path.test.ts) покрывают happy path, schema-валидацию, побеги из sandbox и синхронизацию README ↔ schema.
+
+Тулы `kb.*` из #0001 не трогали — schema это политика роли, а не свойство хранилища; роли в #0003+ передают в `kb.write`/`kb.read` пути, построенные через `resolveRolePath`.
+
+Open question про автоматическую инициализацию `README.md` оставлен для #0003 — там и будет видно, нужен ли init-скрипт или достаточно ручного создания.
+
 ---
 
 ## Context
