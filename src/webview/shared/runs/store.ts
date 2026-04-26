@@ -99,6 +99,20 @@ interface RunsState {
    * enabled, пока не придёт ответ.
    */
   hasWorkspace: boolean;
+  /**
+   * Получали ли мы хотя бы один `runs.list.result` от extension. До этого
+   * момента нельзя отличить «список действительно пуст» от «ещё грузится» —
+   * левая панель использует флаг для skeleton'а вместо empty-state (#0022).
+   */
+  runsListLoaded: boolean;
+  /**
+   * Pending-флаги по произвольному ключу для IPC-операций (#0022). Кнопки
+   * читают значение по ключу и показывают inline-спиннер. Используется
+   * там, где нет своего «глобального» pending-поля (Composer, ответы на
+   * ask_user, и т.п.). Освобождается тем же кодом, который вызвал
+   * `startPending` — обычно через таймер или ack-сообщение из extension.
+   */
+  pendingByKey: Record<string, boolean>;
 }
 
 export type MainAreaMode = 'run-details' | 'new-run' | 'empty';
@@ -118,7 +132,26 @@ const initialState: RunsState = {
   createRunPending: false,
   createRunError: undefined,
   hasWorkspace: true,
+  runsListLoaded: false,
+  pendingByKey: {},
 };
+
+/** Пометить локальный pending-флаг для произвольной операции (#0022). */
+export function startPending(key: string): void {
+  setState((prev) =>
+    prev.pendingByKey[key] ? prev : { ...prev, pendingByKey: { ...prev.pendingByKey, [key]: true } }
+  );
+}
+
+/** Снять локальный pending-флаг. Идемпотентно. */
+export function endPending(key: string): void {
+  setState((prev) => {
+    if (!prev.pendingByKey[key]) return prev;
+    const next = { ...prev.pendingByKey };
+    delete next[key];
+    return { ...prev, pendingByKey: next };
+  });
+}
 
 /**
  * Ключи UI-префов в `globalState`. Держим централизованно, чтобы случайно
@@ -299,16 +332,22 @@ export function sendUserMessage(runId: string, text: string): void {
     // Если для этого рана висит pending ask_user — оптимистично снимаем его
     // локально (UI закрывает баннер мгновенно). Для continue-режима
     // (awaiting_human/failed) pendingAsk и так нет — ничего не меняется.
-    if (prev.pendingByRun[runId] === undefined) return prev;
     const nextByRun = { ...prev.pendingByRun };
-    delete nextByRun[runId];
+    if (nextByRun[runId] !== undefined) delete nextByRun[runId];
     return {
       ...prev,
       pendingAsk: prev.selectedId === runId ? undefined : prev.pendingAsk,
       pendingByRun: nextByRun,
+      // #0022: блокируем кнопку «Отправить» до echo-сообщения / смены статуса.
+      pendingByKey: { ...prev.pendingByKey, [composerSendKey(runId)]: true },
     };
   });
   send({ type: 'runs.user.message', runId, text });
+}
+
+/** Ключ pendingByKey для кнопки «Отправить» в Composer'е конкретного рана. */
+export function composerSendKey(runId: string): string {
+  return `composer.send:${runId}`;
 }
 
 /**
@@ -479,7 +518,7 @@ export function useRunsWiring(): void {
 
       switch (data.type) {
         case 'runs.list.result': {
-          setState((prev) => ({ ...prev, runs: data.runs }));
+          setState((prev) => ({ ...prev, runs: data.runs, runsListLoaded: true }));
           return;
         }
         case 'runs.created': {
@@ -583,6 +622,12 @@ export function useRunsWiring(): void {
           return;
         }
         case 'runs.updated': {
+          // Если ран ушёл в running/done/failed — отправка точно завершилась,
+          // снимаем pending композера на всякий случай (echo мог не прилететь
+          // отдельным сообщением, если статус сменился раньше).
+          if (data.meta.status !== 'awaiting_user_input' && data.meta.status !== 'awaiting_human') {
+            endPending(composerSendKey(data.meta.id));
+          }
           // Если активная сессия рана сменилась (например, handoff
           // продакт→архитектор создал bridge — #0012) И пользователь в
           // follow-mode (selectedSessionId === undefined) — нужно
@@ -631,6 +676,12 @@ export function useRunsWiring(): void {
           return;
         }
         case 'runs.message.appended': {
+          // Echo нашего сообщения = подтверждение, что отправка дошла —
+          // снимаем «Отправить» из pending. Делаем до основного setState,
+          // чтобы UI обновился одной перерисовкой.
+          if (data.message.from === 'user') {
+            endPending(composerSendKey(data.runId));
+          }
           setState((prev) => {
             // Применяем live-приращение, только если открыт этот ран И
             // sessionId события совпадает с просматриваемой сессией

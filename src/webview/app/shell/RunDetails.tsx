@@ -1,9 +1,17 @@
 import { useMemo, useState } from 'react';
-import { sendFinalizeSignal, sendUserMessage, useRunsState } from '@shared/runs/store';
+import {
+  composerSendKey,
+  sendFinalizeSignal,
+  sendUserMessage,
+  useRunsState,
+} from '@shared/runs/store';
 import type { ChatMessage, RunMeta, RunStatus, ToolEvent } from '@shared/runs/types';
 import { contextLimitFor, zoneFor } from '@shared/runs/pricing';
 import { ChatFeed, ChatMessage as ChatBubble, ToolCard } from '@features/chat';
 import type { ToolCardStatus } from '@features/chat';
+import { Button, LoadingState, Skeleton, type Role } from '@shared/ui';
+import { describeRunActivity, type RunActivity } from '@shared/lib/run-status-caption';
+import clsx from 'clsx';
 
 /**
  * Карточка деталей выбранного рана — центральная колонка.
@@ -25,23 +33,31 @@ export function RunDetails() {
     pendingAsk,
     selectedBrief,
     selectedPlan,
+    pendingByKey,
   } = useRunsState();
 
   if (!selectedId) {
     return <div className="p-3 text-muted">Выберите ран слева.</div>;
   }
   if (!selectedDetails) {
-    return <div className="p-3 text-muted">Загружаю…</div>;
+    return <RunDetailsSkeleton />;
   }
 
   const { meta, chat, tools } = selectedDetails;
   const viewedSessionId = selectedSessionId ?? meta.activeSessionId;
   const isViewingActive = viewedSessionId === meta.activeSessionId;
+  const activeRole = inferActiveRole(chat);
+  const activity = describeRunActivity({ meta, tools, role: activeRole });
 
   return (
     <div className="run-details flex flex-col min-h-0 h-full">
       <div className="flex-shrink-0 px-3 py-2 border-b border-border-subtle">
-        <h2 className="run-details__title text-[13px] font-semibold m-0">{meta.title}</h2>
+        <div className="flex items-center gap-2 min-w-0">
+          <h2 className="run-details__title text-[13px] font-semibold m-0 truncate">
+            {meta.title}
+          </h2>
+          <RunActivityIndicator activity={activity} />
+        </div>
         <div className="run-details__status text-[11px] text-muted mt-0.5">
           Статус: <code>{meta.status}</code>
         </div>
@@ -72,6 +88,7 @@ export function RunDetails() {
         status={meta.status}
         hasPendingAsk={pendingAsk !== undefined}
         isViewingActive={isViewingActive}
+        sendPending={Boolean(pendingByKey[composerSendKey(meta.id)])}
       />
     </div>
   );
@@ -150,6 +167,7 @@ function Composer(props: {
   status: RunStatus;
   hasPendingAsk: boolean;
   isViewingActive: boolean;
+  sendPending: boolean;
 }) {
   const [draft, setDraft] = useState('');
 
@@ -202,14 +220,16 @@ function Composer(props: {
         disabled={!sendable}
       />
       <div className="flex items-center gap-2">
-        <button
-          className="run-details__composer-submit px-2 py-1 text-[12px] bg-[var(--vscode-button-background)] text-[var(--vscode-button-foreground)] rounded-sm disabled:opacity-50"
-          type="button"
+        <Button
+          className="run-details__composer-submit"
+          size="sm"
+          variant="primary"
           onClick={submit}
+          loading={props.sendPending}
           disabled={!sendable || draft.trim().length === 0}
         >
           {props.hasPendingAsk ? 'Ответить' : 'Отправить'}
-        </button>
+        </Button>
         {props.hasPendingAsk && (
           <button
             className="run-details__composer-finalize px-2 py-1 text-[12px] underline"
@@ -384,6 +404,59 @@ function buildTimeline(chat: ChatMessage[], tools: ToolEvent[]): TimelineItem[] 
   });
   items.sort((left, right) => left.at.localeCompare(right.at));
   return items;
+}
+
+/**
+ * Цветная подпись активности рана в шапке (#0022).
+ *
+ * `done` — ничего не показываем (ран завершён, индикатор только зашумит).
+ * Цвет/иконка задаются по `kind`: idle/done — приглушённый, thinking/tool —
+ * accent (по умолчанию у LoadingState), awaiting_user — warning, failed — danger.
+ */
+function RunActivityIndicator({ activity }: { activity: RunActivity }) {
+  if (activity.kind === 'done') return null;
+  const tone =
+    activity.kind === 'failed'
+      ? 'text-[var(--vscode-errorForeground)]'
+      : activity.kind === 'awaiting_user'
+        ? 'text-[var(--vscode-inputValidation-warningForeground,var(--vscode-foreground))]'
+        : activity.kind === 'idle' || activity.kind === 'awaiting_human'
+          ? 'text-muted'
+          : undefined;
+  return (
+    <LoadingState
+      label={activity.label}
+      className={clsx('run-details__activity ml-auto shrink-0', tone)}
+    />
+  );
+}
+
+/**
+ * Активная роль для шапки = автор последнего assistant-сообщения в видимой
+ * сессии. Эвристика на первый cut: для bridge'ей (#0012) реальный участник
+ * handoff'а определяется по составу `participants`, но пока этого поля нет
+ * в SessionSummary — берём из текста чата. Для пустого чата дефолт — продакт
+ * (всегда стартует первым). См. issue #0022, implementation notes.
+ */
+function inferActiveRole(chat: ChatMessage[]): Role {
+  for (let i = chat.length - 1; i >= 0; i--) {
+    const from = chat[i].from;
+    if (!from.startsWith('agent:')) continue;
+    const tail = from.slice('agent:'.length);
+    if (tail === 'product' || tail === 'architect' || tail === 'system') return tail;
+  }
+  return 'product';
+}
+
+function RunDetailsSkeleton() {
+  return (
+    <div className="run-details run-details--loading flex flex-col gap-2 p-3" aria-hidden>
+      <Skeleton variant="text" width="60%" />
+      <Skeleton variant="text" width="30%" />
+      <Skeleton variant="block" height={120} />
+      <Skeleton variant="block" height={80} />
+    </div>
+  );
 }
 
 function formatTime(at: string): string {

@@ -1,4 +1,5 @@
 import { selectRun, useRunsState, useRunsWiring } from '@shared/runs/store';
+import { Skeleton } from '@shared/ui';
 
 /**
  * Список ранов — левая колонка экрана.
@@ -18,12 +19,25 @@ export function RunList() {
   // useEffect внутри хука не создаст дублирующих слушателей.
   useRunsWiring();
 
-  const { runs, selectedId } = useRunsState();
+  const { runs, selectedId, runsListLoaded } = useRunsState();
+
+  if (!runsListLoaded) {
+    return (
+      <ul className="run-list run-list--loading" aria-busy="true">
+        {[0, 1, 2].map((i) => (
+          <li key={i} className="run-list__item run-list__item--skeleton flex flex-col gap-1 p-2">
+            <Skeleton variant="text" width="70%" />
+            <Skeleton variant="text" width="40%" />
+          </li>
+        ))}
+      </ul>
+    );
+  }
 
   if (runs.length === 0) {
     return (
       <div className="run-list run-list--empty">
-        Пока ни одного рана. Опишите задачу справа и нажмите Start run.
+        Пока ни одного рана. Нажмите «+ Новый ран», чтобы запустить первую задачу.
       </div>
     );
   }
