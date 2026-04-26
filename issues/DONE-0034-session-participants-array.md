@@ -1,7 +1,7 @@
 ---
 id: 0034
 title: Session.participants — массив Role[] вместо пары
-status: open
+status: done
 created: 2026-04-26
 ---
 
@@ -29,3 +29,17 @@ created: 2026-04-26
 
 - Подзадача #0030.
 - Блокирует: #0036, #0041.
+
+## Outcome
+
+- `SessionMeta.participants: Participant[]` всегда длины ≥ 1; legacy
+  meta.json без массива (или с `agentRole`/только `kind`) нормализуется
+  на чтении через `normalizeParticipants` в
+  [src/extension/entities/run/storage.ts](../src/extension/entities/run/storage.ts) —
+  файл на диске не переписываем.
+- Round-trip новых сессий длины 2 и 3 покрыт unit-тестами в
+  [src/extension/entities/run/storage.test.ts](../src/extension/entities/run/storage.test.ts)
+  (сюита `participants — массив произвольной длины (#0034)`).
+- Ревизия `rg "participants\[|participants\.length === 2" src/` — пусто.
+  US-34 (инфра) + TC-41 (ручной) фиксируют контракт. Реализация прошла
+  ревью без замечаний (коммит `94347a4`).
