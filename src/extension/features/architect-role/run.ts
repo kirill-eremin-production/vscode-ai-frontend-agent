@@ -21,6 +21,7 @@ import { registerRoleResumer } from '@ext/entities/run/resume-registry';
 import { ARCHITECT_MODEL, ARCHITECT_ROLE } from '@ext/entities/run/roles/architect';
 import { buildArchitectSystemPrompt } from '@ext/entities/run/roles/architect.prompt';
 import { buildRoleScopedKbTools } from '@ext/features/product-role/role-kb-tools';
+import { buildTeamInviteTool } from '@ext/features/team';
 import { runProgrammer } from '@ext/features/programmer-role';
 
 /**
@@ -54,12 +55,16 @@ function buildArchitectRegistry(): ToolRegistry {
     registry.set(tool.name, tool);
   }
   registry.set(askUserTool.name, askUserTool as ToolDefinition);
+  // team.invite (#0037): архитектор — соседи по обе стороны (product и
+  // programmer), поэтому самый «активный» пользователь тула.
+  const inviteTool = buildTeamInviteTool(ARCHITECT_ROLE);
+  registry.set(inviteTool.name, inviteTool as ToolDefinition);
   return registry;
 }
 
 /** Имена тулов для `loop.json` — для совместимости с общим форматом. */
 function architectToolNames(): string[] {
-  return ['kb.read', 'kb.write', 'kb.list', 'kb.grep', askUserTool.name];
+  return ['kb.read', 'kb.write', 'kb.list', 'kb.grep', askUserTool.name, 'team.invite'];
 }
 
 /** Сообщение в чат от имени архитектора. */

@@ -22,6 +22,7 @@ import { PRODUCT_MODEL, PRODUCT_ROLE } from '@ext/entities/run/roles/product';
 import { buildProductSystemPrompt } from '@ext/entities/run/roles/product.prompt';
 import { ARCHITECT_ROLE } from '@ext/entities/run/roles/architect';
 import { runArchitect } from '@ext/features/architect-role';
+import { buildTeamInviteTool } from '@ext/features/team';
 import { buildRoleScopedKbTools } from './role-kb-tools';
 
 /**
@@ -51,6 +52,11 @@ function buildProductRegistry(): ToolRegistry {
     registry.set(tool.name, tool);
   }
   registry.set(askUserTool.name, askUserTool as ToolDefinition);
+  // team.invite (#0037): продакт может позвать соседа по иерархии
+  // (architect). Caller жёстко зашит в фабрику тула — модель не может
+  // притвориться другой ролью через аргументы.
+  const inviteTool = buildTeamInviteTool(PRODUCT_ROLE);
+  registry.set(inviteTool.name, inviteTool as ToolDefinition);
   return registry;
 }
 
@@ -60,7 +66,7 @@ function productToolNames(): string[] {
   // что у role-scoped версий. resumer пересоберёт реестр через
   // `buildProductRegistry`, не сверяясь с этим списком (он там для
   // диагностики/совместимости с общим форматом loop.json).
-  return ['kb.read', 'kb.write', 'kb.list', 'kb.grep', askUserTool.name];
+  return ['kb.read', 'kb.write', 'kb.list', 'kb.grep', askUserTool.name, 'team.invite'];
 }
 
 /**

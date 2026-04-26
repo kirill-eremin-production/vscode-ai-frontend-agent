@@ -25,6 +25,7 @@ import {
 } from '@ext/entities/run/roles/programmer';
 import { buildProgrammerSystemPrompt } from '@ext/entities/run/roles/programmer.prompt';
 import { buildRoleScopedKbTools } from '@ext/features/product-role/role-kb-tools';
+import { buildTeamInviteTool } from '@ext/features/team';
 import { buildWorkspaceFsTools, getWorkspaceRootOrThrow } from './workspace-fs-tools';
 
 /**
@@ -114,6 +115,11 @@ function buildProgrammerRegistry(workspaceRoot: string, state: ProgrammerRunStat
     registry.set(tool.name, tool);
   }
   registry.set(askUserTool.name, askUserTool as ToolDefinition);
+  // team.invite (#0037): программист может позвать соседа по иерархии
+  // (architect). Через уровень — сам тул вернёт ошибку с подсказкой
+  // про team.escalate (#0038).
+  const inviteTool = buildTeamInviteTool(PROGRAMMER_ROLE);
+  registry.set(inviteTool.name, inviteTool as ToolDefinition);
   const writeSummaryTool = buildWriteSummaryTool(state);
   registry.set(writeSummaryTool.name, writeSummaryTool as ToolDefinition);
   return registry;
@@ -131,6 +137,7 @@ function programmerToolNames(): string[] {
     'fs.list',
     'fs.grep',
     askUserTool.name,
+    'team.invite',
     'writeSummary',
   ];
 }
