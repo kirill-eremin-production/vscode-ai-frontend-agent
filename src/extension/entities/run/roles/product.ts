@@ -45,6 +45,22 @@ export const PRODUCT_MODEL = 'google/gemini-3.1-flash-lite-preview';
  * см. issue #0003: либо ответ есть, либо вопрос явно лежит в
  * `kb/product/questions/`.
  */
+/**
+ * Маркер, который extension подставляет вместо обычного ответа на
+ * `ask_user`, когда пользователь нажал «Достаточно вопросов, оформляй»
+ * (US-13). Совпадает дословно с описанием в системном промпте — модель
+ * детектит его как сигнал «заверши brief.md и зафиксируй допущения в
+ * `decisions/...md` с frontmatter `assumption: true, confirmed_by_user: false`».
+ *
+ * Источник правды для и prompt'а, и wire.ts — один; иначе при правке
+ * текста легко рассинхронить (модель продолжит ждать другой триггер).
+ */
+export const PRODUCT_FINALIZE_MARKER =
+  '[Сигнал пользователя: вопросов достаточно. Финализируй brief.md прямо сейчас. Любые непрояснённые продуктовые решения зафиксируй явно: создай файл decisions/YYYY-MM-DD-<slug>.md с frontmatter assumption: true, confirmed_by_user: false, опиши предположение и его обоснование. После этого выдай финальный brief.md без новых вопросов.]';
+
+/** Короткое сообщение в chat.jsonl от имени пользователя при finalize. */
+export const PRODUCT_FINALIZE_USER_TEXT = 'Достаточно вопросов, оформляй';
+
 export const BRIEF_SECTIONS = [
   '## Проблема',
   '## Целевой пользователь и сценарий',

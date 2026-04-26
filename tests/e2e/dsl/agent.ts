@@ -259,6 +259,18 @@ export class AgentDriver {
   }
 
   /**
+   * Нажать кнопку «Достаточно вопросов, оформляй» (US-13). Доступна
+   * только когда на ране висит pending ask_user — extension сам
+   * подставит дословный finalize-маркер вместо ответа на вопрос.
+   */
+  async clickFinalize(): Promise<void> {
+    const ui = agentWebviewContent(this.window);
+    const button = ui.locator('.run-details__composer-finalize');
+    await button.waitFor({ state: 'visible', timeout: 30_000 });
+    await button.click();
+  }
+
+  /**
    * Кликнуть по ссылке на файл в карточке tool_result и дождаться,
    * пока VS Code откроет соответствующую вкладку редактора. Используется
    * в TC-23 (видимость созданных файлов в ленте, US-11).

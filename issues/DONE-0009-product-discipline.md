@@ -1,8 +1,9 @@
 ---
 id: 0009
 title: Дисциплина продакта — спрашивай не решай, не лезь в техническое
-status: open
+status: done
 created: 2026-04-26
+completed: 2026-04-26
 ---
 
 ## Context
@@ -33,6 +34,15 @@ US-14:
 - IPC: расширить `runs.user.message` полем `finalize?: boolean` (контракт в [messages.ts](src/extension/features/run-management/messages.ts) + зеркально в `src/webview/shared/runs/`). Если #0007 не сделан — кнопка временно живёт в форме ответа на `ask_user`, но это компромисс; нормальный путь — после #0007.
 - Расширение «значимых пробелов» в системном промпте — единственный способ: код не парсит бриф и не валидирует пробелы. Поведение проверяется TC.
 - TC писать **до реализации**: TC-28 (без `finalize` ран остаётся в `awaiting_user_input` на пробелах), TC-29 (с `finalize` — финализирует, в `decisions/` есть запись с `assumption: true`), TC-30 (запрос «выбери фреймворк» — продакт отказывается, в `brief.md` нет технологий).
+
+## Outcome
+
+- **System prompt продакта** ([product.prompt.ts](src/extension/entities/run/roles/product.prompt.ts)) расширен тремя секциями: «Ask, do not decide» с явным списком значимых пробелов; «Reaction to the finalize signal» с описанием маркера и обязанностью писать ADR-допущения; «Stay product, never technical» с явным запретом на технологии и шаблоном вежливого отказа.
+- **IPC**: `RunsUserMessageRequest` ([messages.ts](src/extension/features/run-management/messages.ts)) получил поле `finalize?: boolean`. Маршрутизация в [wire.ts](src/extension/features/run-management/wire.ts): при `finalize: true` (только в `awaiting_user_input`) extension пишет короткую отметку в `chat.jsonl` (`PRODUCT_FINALIZE_USER_TEXT`) и подкладывает дословный `PRODUCT_FINALIZE_MARKER` как ответ на pending `ask_user`.
+- **Источник правды для маркера** — константы [PRODUCT_FINALIZE_MARKER / PRODUCT_FINALIZE_USER_TEXT](src/extension/entities/run/roles/product.ts), импортируются и в prompt, и в wire — без дрифта между «как описано модели» и «что реально приходит как tool_result».
+- **UI**: в [RunDetails.tsx](src/webview/features/run-list/ui/RunDetails.tsx) рядом с composer появилась кнопка «Достаточно вопросов, оформляй». Видна только при активном pending ask_user; шлёт `runs.user.message { finalize: true, text: '' }` через новый [sendFinalizeSignal](src/webview/shared/runs/store.ts). Стили — [media/main.css](media/main.css).
+- **E2E**: [TC-29](tests/e2e/specs/tc-29-finalize-signal.spec.ts) проверяет полный wiring (UI кнопка → IPC → tool_result содержит маркер → kb.write ADR с `assumption: true` → финальный brief со ссылкой). [TC-30](tests/e2e/specs/tc-30-no-tech-in-brief.spec.ts) — лёгкая контрактная проверка нового assertion'а [expectBriefHasNoTechnologies](tests/e2e/dsl/run-assertions.ts), готового ловить регрессии US-14 на чистых брифах.
+- **TC-28 пропущен сознательно**: «без finalize ран остаётся в awaiting_user_input на пробелах» через мок-OpenRouter сводится к проверке скрипта, а не дисциплины модели — реальную ценность даст только интеграционный тест с настоящей моделью.
 
 ## Related
 

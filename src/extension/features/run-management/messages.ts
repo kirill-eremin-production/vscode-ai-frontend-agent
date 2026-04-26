@@ -60,6 +60,23 @@ export interface RunsUserMessageRequest {
   type: 'runs.user.message';
   runId: string;
   text: string;
+  /**
+   * Сигнал «достаточно вопросов, оформляй» (US-13). Кнопка в UI шлёт
+   * `finalize: true` вместо обычного ответа на pending `ask_user`.
+   *
+   * На стороне extension это разворачивается так:
+   *  - в chat.jsonl пишется короткое user-сообщение (видимый след
+   *    действия пользователя, см. PRODUCT_FINALIZE_USER_TEXT);
+   *  - в pending `ask_user` подкладывается дословный маркер
+   *    `PRODUCT_FINALIZE_MARKER` как tool_result — модель распознаёт
+   *    его по системному промпту и финализирует brief, фиксируя
+   *    оставшиеся допущения в `decisions/...md` с frontmatter
+   *    `assumption: true, confirmed_by_user: false`.
+   *
+   * Допустимо только в `awaiting_user_input`. Поле `text` при finalize
+   * игнорируется — кнопка одна, текст известен заранее.
+   */
+  finalize?: boolean;
 }
 
 /**

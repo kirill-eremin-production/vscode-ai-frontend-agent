@@ -234,6 +234,20 @@ pre {
   align-self: flex-start;
 }
 
+.run-details__composer-finalize {
+  align-self: flex-start;
+  background: transparent;
+  color: var(--vscode-button-secondaryForeground, var(--vscode-foreground));
+  border: 1px solid var(--vscode-button-border, var(--vscode-contrastBorder, transparent));
+  padding: 4px 10px;
+  font-size: 11px;
+  cursor: pointer;
+}
+
+.run-details__composer-finalize:hover {
+  background: var(--vscode-button-secondaryHoverBackground, var(--vscode-list-hoverBackground));
+}
+
 .run-details__composer-hint {
   margin: 0;
   font-size: 10px;

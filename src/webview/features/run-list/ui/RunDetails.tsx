@@ -1,5 +1,5 @@
 import { useMemo, useState } from 'react';
-import { openFile, sendUserMessage, useRunsState } from '@shared/runs/store';
+import { openFile, sendFinalizeSignal, sendUserMessage, useRunsState } from '@shared/runs/store';
 import type { ChatMessage, RunStatus, ToolEvent } from '@shared/runs/types';
 
 /**
@@ -149,6 +149,19 @@ function Composer(props: { runId: string; status: RunStatus; hasPendingAsk: bool
       >
         {props.hasPendingAsk ? 'Ответить' : 'Отправить'}
       </button>
+      {props.hasPendingAsk && (
+        // US-13: явный сигнал «достаточно вопросов». Доступен только пока
+        // на ране висит pending ask_user — иначе кнопке нечего «прерывать».
+        // Текст ответа extension подставит сам (PRODUCT_FINALIZE_MARKER).
+        <button
+          className="run-details__composer-finalize"
+          type="button"
+          onClick={() => sendFinalizeSignal(props.runId)}
+          title="Прекратить вопросы и оформить brief.md, зафиксировав оставшиеся допущения в decisions/"
+        >
+          Достаточно вопросов, оформляй
+        </button>
+      )}
       {!sendable && (
         <p className="run-details__composer-hint">
           Агент сейчас работает — поле ввода активируется, когда шаг закончится.

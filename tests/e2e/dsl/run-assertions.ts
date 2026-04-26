@@ -128,6 +128,55 @@ export function expectBriefHasRequiredSections(run: RunArtifacts): void {
   );
 }
 
+/**
+ * `brief.md` не упоминает конкретных технологий — US-14: продакт остаётся
+ * в продуктовых рамках, не выбирает стек/фреймворки/БД.
+ *
+ * Список ключевых слов умышленно консервативный: ловим явные имена
+ * технологий, а не общие слова вроде «база» или «сервис». Если модель
+ * протащит технологию через перифраз («NoSQL-хранилище») — assertion это
+ * не поймает, и это сознательный компромисс: lex-лист не должен давать
+ * ложные срабатывания на нормальных продуктовых формулировках.
+ *
+ * Регистронезависимая проверка по границам слов: «React» в коде
+ * `react/` не сработает (нет границы), а в тексте «React Router» —
+ * сработает. Это и нужно: мы режем именно technology-name mentions в
+ * прозе brief.md.
+ */
+export function expectBriefHasNoTechnologies(run: RunArtifacts): void {
+  const brief = run.brief;
+  expect(brief, 'Ожидали brief.md на диске').toBeTruthy();
+  const banned = [
+    'React',
+    'Vue',
+    'Angular',
+    'Svelte',
+    'Next.js',
+    'Postgres',
+    'PostgreSQL',
+    'MySQL',
+    'MongoDB',
+    'Redis',
+    'GraphQL',
+    'REST API',
+    'Tailwind',
+    'TypeScript',
+    'JavaScript',
+    'Python',
+    'Django',
+    'Rails',
+    'Kubernetes',
+    'Docker',
+    'AWS',
+    'GCP',
+    'Azure',
+  ];
+  for (const word of banned) {
+    const re = new RegExp(`\\b${word.replace(/[.+]/g, '\\$&')}\\b`, 'i');
+    expect(brief, `В brief.md не должна упоминаться технология "${word}"`).not.toMatch(re);
+  }
+}
+
 /** В knowledge-песочнице лежит файл с заданным содержимым. */
 export function expectKnowledgeFile(
   run: RunArtifacts,

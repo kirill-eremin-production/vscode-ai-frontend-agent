@@ -88,7 +88,7 @@ type WebviewToExtensionMessage =
   | { type: 'runs.list' }
   | { type: 'runs.get'; id: string }
   | { type: 'runs.setApiKey' }
-  | { type: 'runs.user.message'; runId: string; text: string }
+  | { type: 'runs.user.message'; runId: string; text: string; finalize?: boolean }
   | { type: 'editor.open'; path: string };
 
 function send(message: WebviewToExtensionMessage): void {
@@ -157,6 +157,26 @@ export function sendUserMessage(runId: string, text: string): void {
     };
   });
   send({ type: 'runs.user.message', runId, text });
+}
+
+/**
+ * Сигнал «достаточно вопросов, оформляй» (US-13). Шлётся вместо обычного
+ * ответа на pending `ask_user` — extension сам подставит дословный
+ * маркер для модели и короткий текст для chat.jsonl. Поле text здесь
+ * пустое: кнопка одна, выбор пользователю не предлагается.
+ */
+export function sendFinalizeSignal(runId: string): void {
+  setState((prev) => {
+    if (prev.pendingByRun[runId] === undefined) return prev;
+    const nextByRun = { ...prev.pendingByRun };
+    delete nextByRun[runId];
+    return {
+      ...prev,
+      pendingAsk: prev.selectedId === runId ? undefined : prev.pendingAsk,
+      pendingByRun: nextByRun,
+    };
+  });
+  send({ type: 'runs.user.message', runId, text: '', finalize: true });
 }
 
 /**

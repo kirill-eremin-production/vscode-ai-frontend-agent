@@ -1,8 +1,9 @@
 ---
 id: 0007
 title: Chat UX foundation — продолжение диалога и видимость тулов/файлов
-status: open
+status: done
 created: 2026-04-26
+completed: 2026-04-26
 ---
 
 ## Context
@@ -40,6 +41,18 @@ US-11:
 - Resume-логика для роли уже есть (`registerProductResumer` в [src/extension/features/product-role/](src/extension/features/product-role/)). Дописать вход «продолжение по новому пользовательскому сообщению» — сейчас она поднимает ран только из `awaiting_user_input`.
 - Открытие файлов из webview: новое IPC `editor.open { path }`, в extension стороне — `vscode.commands.executeCommand('vscode.open', vscode.Uri.file(absPath))`. Path из `tools.jsonl` относительный — резолвится относительно workspace root.
 - TC писать **до реализации**: TC-22 (продолжение диалога после `awaiting_human` → новый `brief.md`), TC-23 (клик по ссылке на файл из `kb.write` открывает редактор), TC-24 (упавший тул виден в ленте с сообщением ошибки).
+
+## Outcome
+
+Реализовано в одном бранче:
+
+- IPC: новый [runs.user.message](src/extension/features/run-management/messages.ts) — единая точка отправки текста пользователем; маршрутизация по статусу в [wire.ts](src/extension/features/run-management/wire.ts) (answer на ask_user / continue диалога / append в chat.jsonl). Старый `runs.user.answer` снят без shim'а.
+- Resume: введён [ResumeIntent](src/extension/shared/agent-loop/resume.ts) (`answer | continue`); `reconstructHistory` принимает intent, `RoleResumer`/`resumeRun` тоже. Продакт ([product-role/run.ts](src/extension/features/product-role/run.ts)) и smoke ([tool-loop-smoke/command.ts](src/extension/features/tool-loop-smoke/command.ts)) пишут разный resume-маркер для каждого intent.
+- Broadcast tools: каждое событие `tools.jsonl` теперь идёт через [recordToolEvent](src/extension/features/run-management/broadcast.ts) (5 точек в [agent-loop/loop.ts](src/extension/shared/agent-loop/loop.ts)) → `runs.tool.appended` в webview.
+- UI: [RunDetails.tsx](src/webview/features/run-list/ui/RunDetails.tsx) разнесён на `AskUserBanner` (visual-only) + постоянный `Composer` + `Timeline` (мердж chat+tools по timestamp) + `ToolEntry` с кликабельной ссылкой на файл (`kb.write.path` → `editor.open`). Store ([runs/store.ts](src/webview/shared/runs/store.ts)) хранит `selectedDetails: { meta, chat, tools }` и обрабатывает новый event.
+- Открытие файлов: IPC `editor.open` с валидацией относительного пути (no `..`, no absolute) в [wire.ts](src/extension/features/run-management/wire.ts).
+- E2E: [TC-22](tests/e2e/specs/tc-22-continue-dialog-after-awaiting-human.spec.ts) (continue → новый brief), [TC-23](tests/e2e/specs/tc-23-tool-link-opens-file.spec.ts) (file link открывает editor), [TC-24](tests/e2e/specs/tc-24-failed-tool-visible-in-timeline.spec.ts) (упавший tool с error-text в ленте). DSL-фасад [agent.ts](tests/e2e/dsl/agent.ts) расширен: `sendUserMessage`, `openFileFromToolEntry`, `waitForToolEntry`.
+- Lint: [eslint.config.mjs](eslint.config.mjs) теперь игнорит `.vscode-test/`, `playwright-report/`, `test-results/` (была OOM при сканировании), отдельный конфиг для CommonJS test-extension.
 
 ## Related
 

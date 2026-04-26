@@ -5,6 +5,10 @@ import { createRun, getRunDetails, listRuns } from '@ext/entities/run/service';
 import { appendChatMessage, findPendingAsk, readBrief, readMeta } from '@ext/entities/run/storage';
 import { resumeRun } from '@ext/entities/run/resume-registry';
 import { resolvePendingAsk } from '@ext/shared/agent-loop';
+import {
+  PRODUCT_FINALIZE_MARKER,
+  PRODUCT_FINALIZE_USER_TEXT,
+} from '@ext/entities/run/roles/product';
 import { promptForOpenRouterKey } from '@ext/shared/secrets/openrouter-key';
 import { broadcast, onBroadcast } from './broadcast';
 import type { ExtensionToWebviewMessage, WebviewToExtensionMessage } from './messages';
@@ -115,7 +119,7 @@ export function wireRunMessages(
           return;
         }
         case 'runs.user.message': {
-          await handleUserMessage(context, msg.runId, msg.text);
+          await handleUserMessage(context, msg.runId, msg.text, msg.finalize === true);
           return;
         }
         case 'editor.open': {
@@ -168,16 +172,62 @@ export function wireRunMessages(
 async function handleUserMessage(
   context: vscode.ExtensionContext,
   runId: string,
-  text: string
+  text: string,
+  finalize: boolean
 ): Promise<void> {
-  const trimmed = text.trim();
-  if (trimmed.length === 0) {
-    throw new Error('Пустое сообщение — нечего отправлять');
-  }
-
   const meta = await readMeta(runId);
   if (!meta) {
     throw new Error(`Ран ${runId} не найден`);
+  }
+
+  // finalize-сигнал (US-13): кнопка «Достаточно вопросов» вместо обычного
+  // ответа на ask_user. Поле text от UI игнорируем — кнопка одна, текст
+  // подставляем дословный (PRODUCT_FINALIZE_MARKER), чтобы модель его
+  // распознала ровно так, как описано в системном промпте.
+  if (finalize) {
+    if (meta.status !== 'awaiting_user_input') {
+      throw new Error(
+        `Сигнал finalize валиден только в awaiting_user_input, а ран сейчас в "${meta.status}"`
+      );
+    }
+    const pending = await findPendingAsk(runId);
+    if (!pending) {
+      throw new Error(
+        'Ран в awaiting_user_input, но pending-вопроса в tools.jsonl нет — состояние повреждено'
+      );
+    }
+    // 1. Видимый след действия в chat.jsonl (короткий, без длинного маркера).
+    //    Это нужно UI: пользователь должен увидеть, что нажал именно
+    //    «достаточно вопросов», а не оставил поле пустым.
+    const userMessage = {
+      id: crypto.randomBytes(6).toString('hex'),
+      from: 'user',
+      at: new Date().toISOString(),
+      text: PRODUCT_FINALIZE_USER_TEXT,
+    };
+    await appendChatMessage(runId, userMessage);
+    broadcast({ type: 'runs.message.appended', runId, message: userMessage });
+
+    // 2. Маркер уходит в pending как ответ на ask_user. Дальше — обычный
+    //    путь: in-memory pending → resolvePendingAsk; если процесс
+    //    перезапускался — поднимаем resumer с intent='answer'.
+    const resolved = resolvePendingAsk(pending.toolCallId, PRODUCT_FINALIZE_MARKER);
+    if (resolved) return;
+    await resumeRun({
+      context,
+      runId,
+      intent: {
+        kind: 'answer',
+        pendingToolCallId: pending.toolCallId,
+        userAnswer: PRODUCT_FINALIZE_MARKER,
+      },
+    });
+    return;
+  }
+
+  const trimmed = text.trim();
+  if (trimmed.length === 0) {
+    throw new Error('Пустое сообщение — нечего отправлять');
   }
 
   if (meta.status === 'awaiting_user_input') {
