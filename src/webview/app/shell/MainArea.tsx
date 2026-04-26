@@ -1,3 +1,4 @@
+import { RunCreateForm } from '@features/run-create';
 import { RunDetails } from '@features/run-list';
 import { useRunsState } from '@shared/runs/store';
 
@@ -8,9 +9,12 @@ import { useRunsState } from '@shared/runs/store';
  *  - `'run-details'` — карточка выбранного рана (текущий `RunDetails`).
  *    Сюда же попадаем при выборе рана из списка и сразу после успешного
  *    `runs.created`.
- *  - `'new-run'` — экран создания нового рана. Реальная реализация в
- *    #0018; на этом этапе показываем заглушку, чтобы убедиться, что
- *    переключение режимов работает.
+ *  - `'new-run'` — экран создания нового рана. Здесь рендерится
+ *    существующая `RunCreateForm` из `@features/run-create` — раньше
+ *    она жила в сайдбаре; #0018 заменит её более полноценным экраном
+ *    (с черновиками, выбором роли и т.п.). До тех пор это та же форма,
+ *    просто переехавшая в main-area, чтобы UI-сценарий «создать ран»
+ *    не регрессировал.
  *  - `'empty'` — приглашение «выберите ран». Дефолт при первом запуске,
  *    пока пользователь ничего не открыл.
  *
@@ -25,7 +29,9 @@ export function MainArea() {
   return (
     <main className="flex flex-col min-h-0 overflow-auto">
       {mainAreaMode === 'new-run' ? (
-        <NewRunStub />
+        <div className="p-3">
+          <RunCreateForm />
+        </div>
       ) : selectedId ? (
         <>
           <p className="px-3 py-1 text-[11px] text-muted border-b border-border-subtle">
@@ -39,14 +45,6 @@ export function MainArea() {
         <EmptyState />
       )}
     </main>
-  );
-}
-
-function NewRunStub() {
-  return (
-    <div className="flex flex-1 items-center justify-center p-4 text-[12px] text-muted">
-      Форма создания — #0018
-    </div>
   );
 }
 
