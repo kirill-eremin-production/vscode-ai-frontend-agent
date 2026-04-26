@@ -50,6 +50,8 @@ const LOOP_FILE = 'loop.json';
 const PRODUCT_BRIEFS_DIR = path.join('product', 'briefs');
 /** Подкаталог в kb для планов архитектора (#0004). */
 const ARCHITECT_PLANS_DIR = path.join('architect', 'plans');
+/** Подкаталог в kb для сводок программиста (#0027). */
+const PROGRAMMER_SUMMARIES_DIR = path.join('programmer', 'summaries');
 
 /**
  * Кастомная ошибка хранилища — на случаях, когда дальнейшая работа
@@ -688,6 +690,59 @@ export async function readPlan(runId: string): Promise<string | undefined> {
   const meta = await readMeta(runId);
   if (!meta?.planPath) return undefined;
   const absPath = path.join(getWorkspaceRoot(), meta.planPath);
+  try {
+    return await fs.readFile(absPath, 'utf8');
+  } catch {
+    return undefined;
+  }
+}
+
+/* ── Summary (per-run, stored in shared kb) ─────────────────────── */
+
+/**
+ * Параллель `buildBriefRelativePath`/`buildPlanRelativePath` для
+ * программиста (#0027): `summary.md` лежит в
+ * `.agents/knowledge/programmer/summaries/<runId>-<slug>.md`.
+ */
+function buildSummaryRelativePath(runId: string, title: string): string {
+  const filename = `${runId}-${slugifyTitle(title)}.md`;
+  return path.join(ROOT_DIR_NAME, KNOWLEDGE_DIR_NAME, PROGRAMMER_SUMMARIES_DIR, filename);
+}
+
+/**
+ * Атомарно записать `summary.md` в kb и сохранить ссылку в
+ * `meta.summaryPath`. Возвращает обновлённую RunMeta (для broadcast'а)
+ * и итоговый workspace-relative путь. Параллель [writeBrief](#L567)
+ * и [writePlan](#L660): один вызов на финализации программиста.
+ */
+export async function writeSummary(
+  runId: string,
+  title: string,
+  content: string
+): Promise<{ run: RunMeta | undefined; summaryPath: string }> {
+  const relPath = buildSummaryRelativePath(runId, title);
+  const absPath = path.join(getWorkspaceRoot(), relPath);
+  await fs.mkdir(path.dirname(absPath), { recursive: true });
+  const tmpPath = `${absPath}.tmp`;
+  await fs.writeFile(tmpPath, content, 'utf8');
+  await fs.rename(tmpPath, absPath);
+
+  const run = await readMeta(runId);
+  if (!run) return { run: undefined, summaryPath: relPath };
+  const updated: RunMeta = {
+    ...run,
+    summaryPath: relPath,
+    updatedAt: new Date().toISOString(),
+  };
+  await writeMeta(updated);
+  return { run: updated, summaryPath: relPath };
+}
+
+/** Прочитать `summary.md` рана. Undefined — `meta.summaryPath` пуст или файл исчез. */
+export async function readSummary(runId: string): Promise<string | undefined> {
+  const meta = await readMeta(runId);
+  if (!meta?.summaryPath) return undefined;
+  const absPath = path.join(getWorkspaceRoot(), meta.summaryPath);
   try {
     return await fs.readFile(absPath, 'utf8');
   } catch {

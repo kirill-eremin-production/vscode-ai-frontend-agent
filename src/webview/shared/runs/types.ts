@@ -106,6 +106,11 @@ export interface RunMeta {
   briefPath?: string;
   /** Путь к plan.md (workspace-relative). Заполняется при финализации архитектора. */
   planPath?: string;
+  /**
+   * Путь к summary.md (workspace-relative). Заполняется тулом
+   * `writeSummary` при финализации программиста (#0027).
+   */
+  summaryPath?: string;
 }
 
 /**

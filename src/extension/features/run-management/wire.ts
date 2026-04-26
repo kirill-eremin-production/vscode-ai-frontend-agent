@@ -9,6 +9,7 @@ import {
   readBrief,
   readMeta,
   readPlan,
+  readSummary,
 } from '@ext/entities/run/storage';
 import { resumeRun } from '@ext/entities/run/resume-registry';
 import { resolvePendingAsk } from '@ext/shared/agent-loop';
@@ -125,6 +126,9 @@ export function wireRunMessages(
           // Читаем безусловно по тем же мотивам, что и brief: пустой —
           // вернётся undefined без лишнего I/O.
           const plan = details ? await readPlan(msg.id) : undefined;
+          // summary.md появляется после финализации программиста (#0027).
+          // Читаем безусловно, по тем же мотивам, что brief/plan.
+          const summary = details ? await readSummary(msg.id) : undefined;
           send({
             type: 'runs.get.result',
             id: msg.id,
@@ -135,6 +139,7 @@ export function wireRunMessages(
             pendingAsk,
             brief,
             plan,
+            summary,
           });
           return;
         }

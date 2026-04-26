@@ -24,6 +24,8 @@ import type { ChatMessage, PendingAsk, RunMeta, ToolEvent } from './types';
  *  - `selectedBrief` — содержимое `brief.md` выбранного, если есть.
  *  - `selectedPlan` — содержимое `plan.md` выбранного (артефакт
  *    архитектора, #0004), если есть.
+ *  - `selectedSummary` — содержимое `summary.md` выбранного (артефакт
+ *    программиста, #0027), если есть.
  */
 
 interface RunsState {
@@ -54,6 +56,12 @@ interface RunsState {
    * по той же схеме, что и `selectedBrief` (см. issue #0004).
    */
   selectedPlan: string | undefined;
+  /**
+   * Содержимое `summary.md` выбранного рана. Заполняется в
+   * `runs.get.result` по той же схеме, что `selectedBrief`/`selectedPlan`
+   * (см. issue #0027).
+   */
+  selectedSummary: string | undefined;
   /**
    * Свёрнут ли левый сайдбар (RunListPanel). Persist'ится через UI-префы
    * (#0017) — состояние переживает перезапуск VS Code. На узком окне
@@ -143,6 +151,7 @@ const initialState: RunsState = {
   pendingByRun: {},
   selectedBrief: undefined,
   selectedPlan: undefined,
+  selectedSummary: undefined,
   leftPanelCollapsed: false,
   sessionsPanelCollapsedByRun: {},
   mainAreaMode: 'empty',
@@ -381,6 +390,7 @@ export function selectRun(id: string): void {
     // прилетит в `runs.get.result`. Иначе показывали бы бриф предыдущего.
     selectedBrief: undefined,
     selectedPlan: undefined,
+    selectedSummary: undefined,
   }));
   send({ type: 'runs.get', id });
 }
@@ -586,6 +596,7 @@ type ExtensionToWebviewMessage =
       pendingAsk?: PendingAsk;
       brief?: string;
       plan?: string;
+      summary?: string;
     }
   | { type: 'runs.created'; meta: RunMeta }
   | { type: 'runs.error'; message: string }
@@ -718,6 +729,7 @@ export function useRunsWiring(): void {
                 pendingAsk: undefined,
                 selectedBrief: undefined,
                 selectedPlan: undefined,
+                selectedSummary: undefined,
               };
             }
             return {
@@ -735,6 +747,7 @@ export function useRunsWiring(): void {
               pendingAsk: data.pendingAsk,
               selectedBrief: data.brief,
               selectedPlan: data.plan,
+              selectedSummary: data.summary,
             };
           });
           return;

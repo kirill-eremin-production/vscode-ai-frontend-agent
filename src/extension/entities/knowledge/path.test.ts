@@ -56,7 +56,7 @@ describe('resolveRolePath', () => {
     // строкой из рантайма (имени файла, аргумента тула в будущем).
     expect(() =>
       resolveRolePath({
-        role: 'programmer' as never,
+        role: 'designer' as never,
         subdir: 'decisions',
         file: 'x.md',
       })

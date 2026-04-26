@@ -161,6 +161,21 @@ export class AgentDriver {
   }
 
   /**
+   * Дождаться появления `summary.md` на диске (артефакт программиста,
+   * #0027). Симметрично `waitForBrief`/`waitForPlan`: сигнал
+   * «программист дошёл до финала и записал summary через writeSummary».
+   */
+  async waitForSummary(timeoutMs = 30_000): Promise<void> {
+    const deadline = Date.now() + timeoutMs;
+    while (Date.now() < deadline) {
+      const runs = listRuns(this.workspacePath);
+      if (runs.length > 0 && runs[0].summary !== undefined) return;
+      await new Promise((resolve) => setTimeout(resolve, 200));
+    }
+    throw new Error(`[agent] За ${timeoutMs} мс не появился summary.md ни у одного рана`);
+  }
+
+  /**
    * Дождаться, пока статус единственного рана дойдёт до заданного.
    * Альтернатива `waitForBrief` для случаев, когда финал — `failed`
    * (брифа не будет, но статус мы всё равно увидим).

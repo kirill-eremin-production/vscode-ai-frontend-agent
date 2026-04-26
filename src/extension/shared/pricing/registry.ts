@@ -3,6 +3,16 @@ import {
   PRODUCT_PRICING,
   PRODUCT_CONTEXT_LIMIT_TOKENS,
 } from '@ext/entities/run/roles/product';
+import {
+  ARCHITECT_MODEL,
+  ARCHITECT_PRICING,
+  ARCHITECT_CONTEXT_LIMIT_TOKENS,
+} from '@ext/entities/run/roles/architect';
+import {
+  PROGRAMMER_MODEL,
+  PROGRAMMER_PRICING,
+  PROGRAMMER_CONTEXT_LIMIT_TOKENS,
+} from '@ext/entities/run/roles/programmer';
 
 /**
  * Реестр тарифов и контекст-лимитов моделей.
@@ -42,10 +52,14 @@ export interface Usage {
  */
 const PRICING_REGISTRY: Record<string, Pricing> = {
   [PRODUCT_MODEL]: PRODUCT_PRICING,
+  [ARCHITECT_MODEL]: ARCHITECT_PRICING,
+  [PROGRAMMER_MODEL]: PROGRAMMER_PRICING,
 };
 
 const CONTEXT_LIMIT_REGISTRY: Record<string, number> = {
   [PRODUCT_MODEL]: PRODUCT_CONTEXT_LIMIT_TOKENS,
+  [ARCHITECT_MODEL]: ARCHITECT_CONTEXT_LIMIT_TOKENS,
+  [PROGRAMMER_MODEL]: PROGRAMMER_CONTEXT_LIMIT_TOKENS,
 };
 
 /**

@@ -182,4 +182,13 @@ export interface RunMeta {
    * по той же логике, что и `briefPath`.
    */
   planPath?: string;
+  /**
+   * Путь к артефакту программиста (`summary.md`), относительно корня
+   * workspace. Заполняется `writeSummary` при финализации программиста
+   * (issue #0027). Лежит в `.agents/knowledge/programmer/summaries/...`
+   * по той же логике, что `briefPath`/`planPath`. Уникальное отличие —
+   * summary всегда писается тем же runId, никаких внешних апдейтов после
+   * финализации не предполагается.
+   */
+  summaryPath?: string;
 }

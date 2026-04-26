@@ -21,7 +21,7 @@
  */
 
 /** Имена ролей, у которых есть собственная kb. */
-export type KnowledgeRole = 'product' | 'architect';
+export type KnowledgeRole = 'product' | 'architect' | 'programmer';
 
 /**
  * Описание схемы одной роли. `subdirs` — закрытое множество имён
@@ -68,6 +68,16 @@ export const ARCHITECT_SUBDIRS = ['modules', 'decisions', 'patterns', 'risks'] a
 export type ArchitectSubdir = (typeof ARCHITECT_SUBDIRS)[number];
 
 /**
+ * Поддиректории kb программиста (issue #0027). Три «жанра» знания
+ * реализатора: устоявшиеся паттерны кодовой базы, реализационные
+ * решения по ходу ранов, и грабли (флаки тесты, странности тулинга).
+ * README с описанием — в [programmer-readme](./programmer-readme.ts).
+ */
+export const PROGRAMMER_SUBDIRS = ['patterns', 'decisions', 'gotchas'] as const;
+
+export type ProgrammerSubdir = (typeof PROGRAMMER_SUBDIRS)[number];
+
+/**
  * Реестр схем по ролям. Используется `resolveRolePath` для проверки
  * входов и теми ролями, кому нужно перечислить свои поддиректории
  * (например, при инициализации README).
@@ -80,6 +90,10 @@ export const KNOWLEDGE_SCHEMA: Record<KnowledgeRole, RoleSchema> = {
   architect: {
     role: 'architect',
     subdirs: new Set<string>(ARCHITECT_SUBDIRS),
+  },
+  programmer: {
+    role: 'programmer',
+    subdirs: new Set<string>(PROGRAMMER_SUBDIRS),
   },
 };
 

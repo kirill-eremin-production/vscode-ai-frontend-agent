@@ -1,9 +1,20 @@
 ---
 id: 0027
 title: Реализовать роль программиста (plan.md → реальные правки в коде проекта)
-status: open
+status: done
 created: 2026-04-26
 ---
+
+## Outcome
+
+Цикл «идея → бриф → план → код» замкнут. Программист добавлен как третья роль и автостартует после успеха архитектора.
+
+- Роль и handoff: `src/extension/entities/run/roles/programmer.{ts,prompt.ts}`, `src/extension/entities/knowledge/programmer-readme.ts`. Включена в `KNOWLEDGE_SCHEMA` ([schema.ts](src/extension/entities/knowledge/schema.ts), [index.ts](src/extension/entities/knowledge/index.ts)). Fire-and-forget из success-ветки `runArchitect` ([architect-role/run.ts](src/extension/features/architect-role/run.ts)).
+- Workspace fs-тулы (первый раз агент трогает реальный код пользователя): [workspace-fs-tools.ts](src/extension/features/programmer-role/workspace-fs-tools.ts) с unit-покрытием в [workspace-fs-tools.test.ts](src/extension/features/programmer-role/workspace-fs-tools.test.ts). Sandbox = workspaceRoot, double-realpath check, deny-write список (`.agents/`, `.git/`, `node_modules/`, и пр.). Без `fs.delete`/`fs.rename` намеренно.
+- Артефакты: `summary.md` пишется через [storage.ts](src/extension/entities/run/storage.ts), `RunMeta.summaryPath` отдаётся в UI ([RunDetails.tsx](src/webview/app/shell/RunDetails.tsx)).
+- Resumer: программист регистрируется в `activate` ([extension/index.ts](src/extension/index.ts)).
+- E2E: TC-40/41/42 покрывают happy path, sandbox containment, resumer (через `extraEnv`-фикстуру в [tests/e2e/fixtures/vscode.ts](tests/e2e/fixtures/vscode.ts) и DSL [run-artifacts.ts](tests/e2e/dsl/run-artifacts.ts)).
+- Намеренно вне scope: shell-тулы, per-write approval, `fs.delete/rename`, декомпозиция плана — записаны в Related как будущие задачи.
 
 ## Context
 

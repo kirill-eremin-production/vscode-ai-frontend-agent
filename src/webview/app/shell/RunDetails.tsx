@@ -39,6 +39,7 @@ export function RunDetails() {
     pendingAsk,
     selectedBrief,
     selectedPlan,
+    selectedSummary,
     pendingByKey,
   } = stateSnapshot;
 
@@ -86,6 +87,12 @@ export function RunDetails() {
           <details className="run-details__brief mt-1">
             <summary className="text-[11px] text-muted cursor-pointer">План</summary>
             <pre className="text-[11px] mt-1 whitespace-pre-wrap">{selectedPlan}</pre>
+          </details>
+        )}
+        {selectedSummary && (
+          <details className="run-details__brief mt-1">
+            <summary className="text-[11px] text-muted cursor-pointer">Сводка изменений</summary>
+            <pre className="text-[11px] mt-1 whitespace-pre-wrap">{selectedSummary}</pre>
           </details>
         )}
       </div>

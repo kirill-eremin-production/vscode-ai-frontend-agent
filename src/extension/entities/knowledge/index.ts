@@ -9,12 +9,15 @@ export {
   KNOWLEDGE_SCHEMA,
   KnowledgeSchemaError,
   PRODUCT_SUBDIRS,
+  PROGRAMMER_SUBDIRS,
   getRoleSchema,
   type ArchitectSubdir,
   type KnowledgeRole,
   type ProductSubdir,
+  type ProgrammerSubdir,
   type RoleSchema,
 } from './schema';
 export { resolveRolePath, type ResolveRolePathInput, type ResolvedRolePath } from './path';
 export { PRODUCT_KB_README_MARKDOWN } from './product-readme';
 export { ARCHITECT_KB_README_MARKDOWN } from './architect-readme';
+export { PROGRAMMER_KB_README_MARKDOWN } from './programmer-readme';

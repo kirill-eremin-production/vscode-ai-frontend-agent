@@ -88,6 +88,8 @@ export interface RunMetaSnapshot {
   briefPath?: string;
   /** Путь к plan.md в kb относительно workspace (после #0004). */
   planPath?: string;
+  /** Путь к summary.md в kb относительно workspace (после #0027). */
+  summaryPath?: string;
 }
 
 /** Снимок SessionMeta в той форме, что лежит на диске. */
@@ -194,6 +196,20 @@ export class RunArtifacts {
     const planPath = this.meta?.planPath;
     if (!planPath) return undefined;
     const filePath = path.join(this.workspacePath, planPath);
+    if (!fs.existsSync(filePath)) return undefined;
+    return fs.readFileSync(filePath, 'utf8');
+  }
+
+  /**
+   * Содержимое `summary.md` рана. Хранится в kb
+   * (`.agents/knowledge/programmer/summaries/...` после #0027); путь —
+   * `meta.summaryPath` (workspace-relative). Undefined — программист
+   * не дошёл до `writeSummary`.
+   */
+  get summary(): string | undefined {
+    const summaryPath = this.meta?.summaryPath;
+    if (!summaryPath) return undefined;
+    const filePath = path.join(this.workspacePath, summaryPath);
     if (!fs.existsSync(filePath)) return undefined;
     return fs.readFileSync(filePath, 'utf8');
   }

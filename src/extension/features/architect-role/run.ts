@@ -21,6 +21,7 @@ import { registerRoleResumer } from '@ext/entities/run/resume-registry';
 import { ARCHITECT_MODEL, ARCHITECT_ROLE } from '@ext/entities/run/roles/architect';
 import { buildArchitectSystemPrompt } from '@ext/entities/run/roles/architect.prompt';
 import { buildRoleScopedKbTools } from '@ext/features/product-role/role-kb-tools';
+import { runProgrammer } from '@ext/features/programmer-role';
 
 /**
  * Сервисный слой роли архитектора (issue #0004).
@@ -95,7 +96,11 @@ async function appendSystemChatMessage(runId: string, text: string): Promise<voi
  * раздувается длинным markdown'ом, полный текст лежит в `plan.md` и
  * рендерится отдельной секцией UI рядом с брифом.
  */
-async function finalizeArchitectRun(runId: string, outcome: AgentLoopResult): Promise<void> {
+async function finalizeArchitectRun(
+  runId: string,
+  apiKey: string,
+  outcome: AgentLoopResult
+): Promise<void> {
   if (outcome.kind === 'completed') {
     const plan = outcome.finalContent.trim();
     if (plan.length === 0) {
@@ -116,6 +121,17 @@ async function finalizeArchitectRun(runId: string, outcome: AgentLoopResult): Pr
     await appendArchitectChatMessage(runId, preview);
     const updated = await updateRunStatus(runId, 'awaiting_human');
     if (updated) broadcast({ type: 'runs.updated', meta: updated });
+
+    // Issue #0027: автоматический handoff к программисту. Опт-аут через
+    // env-переменную нужен e2e-фикстуре — архитекторские TC (TC-31..)
+    // не должны спотыкаться об программистский запрос к OpenRouter, для
+    // которого в их сценарии нет ответа. Прод этой переменной не задаёт
+    // — handoff всегда включён.
+    if (process.env.AI_FRONTEND_AGENT_AUTOSTART_PROGRAMMER === '0') return;
+
+    void runProgrammer({ runId, apiKey }).catch((err) => {
+      console.error('[runProgrammer] непойманная ошибка:', err);
+    });
     return;
   }
 
@@ -186,7 +202,7 @@ export async function runArchitect(params: { runId: string; apiKey: string }): P
     outcome = { kind: 'failed', reason, iterations: 0 };
   }
 
-  await finalizeArchitectRun(params.runId, outcome);
+  await finalizeArchitectRun(params.runId, params.apiKey, outcome);
 }
 
 /**
@@ -234,7 +250,7 @@ export function registerArchitectResumer(): void {
       outcome = { kind: 'failed', reason, iterations: 0 };
     }
 
-    await finalizeArchitectRun(runId, outcome);
+    await finalizeArchitectRun(runId, apiKey, outcome);
   });
 }
 

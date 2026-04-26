@@ -8,6 +8,7 @@ import {
 } from '@ext/features/tool-loop-smoke/command';
 import { registerProductResumer } from '@ext/features/product-role';
 import { registerArchitectResumer } from '@ext/features/architect-role';
+import { registerProgrammerResumer } from '@ext/features/programmer-role';
 
 /**
  * Точка входа extension host.
@@ -72,6 +73,12 @@ export function activate(context: vscode.ExtensionContext) {
   // подняться после перезапуска VS Code или нового сообщения от
   // пользователя (US-10).
   registerArchitectResumer();
+
+  // Resumer программиста (#0027): по тем же причинам, что и у архитектора
+  // — программистский ран, остановленный на pending `ask_user`, должен
+  // подняться после перезапуска VS Code или нового сообщения от
+  // пользователя.
+  registerProgrammerResumer();
 }
 
 /**

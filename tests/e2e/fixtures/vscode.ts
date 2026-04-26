@@ -138,6 +138,11 @@ export async function launchVSCodeApp(
       // step без сценарных ответов на его модель. Архитекторские TC
       // (TC-31) выставляют '1' через `test.use({ extraEnv: ... })`.
       AI_FRONTEND_AGENT_AUTOSTART_ARCHITECT: '0',
+      // Аналогично — выключаем авто-передачу архитектора программисту
+      // (#0027), чтобы продактовые/архитекторские TC не ломались об
+      // программистский step без сценарных ответов. Программистские TC
+      // (TC-40+) выставляют '1' через `test.use({ extraEnv: ... })`.
+      AI_FRONTEND_AGENT_AUTOSTART_PROGRAMMER: '0',
       // Per-test override (после дефолтов, чтобы тест мог переопределить
       // любую переменную выше).
       ...extraEnv,
