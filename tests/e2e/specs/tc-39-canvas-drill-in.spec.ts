@@ -4,12 +4,27 @@ import { scenario, fakeFinalAnswer, fakeToolCall } from '../dsl/scenario';
 import { agentWebviewContent } from '../helpers/webview';
 
 /**
- * TC-39. Канвас — drill-in в чат сессии (US-27, #0026).
+ * TC-39. Канвас — drill-in через клик по кубикам/User-элементу
+ * (US-27, #0026, #0028, #0042, #0043, #0045).
  *
- * Клик по кубику архитектора → bridge-сессия в чате; клик по
- * handoff-стрелке → та же bridge; клик по кубику продакта → root-сессия.
- * Возврат на «Карту» и обратно через таб «Чат» восстанавливает последнюю
- * просмотренную сессию (`mainArea.lastSession.<runId>`).
+ * После #0042 на канвасе нет edge'ей коммуникации (org-chart-иерархия,
+ * не flow-граф), поэтому исторический drill-by-edge удалён вместе с
+ * самими стрелками. Контракт `data-canvas-drill-session` сохранён —
+ * именно через него тест узнаёт, какая сессия откроется по клику,
+ * не лезя в runtime-state webview'а.
+ *
+ * Что покрываем (по AC #0045):
+ *  - клик по кубику архитектора (idle после плана) → открывается его
+ *    последняя owned-сессия (bridge product↔architect);
+ *  - клик по визуальному User-элементу → открывается корневая
+ *    user↔product сессия рана (#0043);
+ *  - lastViewedSession persistence (#0026): возврат на «Карту» → клик
+ *    по «Чату» восстанавливает ту же сессию, в которую только что
+ *    провалился drill.
+ *
+ * Кейс «клик по работающему программисту» вынесен в ручной
+ * TC-52 (.md) — программистский цикл сейчас без e2e-инфраструктуры
+ * автоматизированного запуска.
  */
 
 test.use({ extraEnv: { AI_FRONTEND_AGENT_AUTOSTART_ARCHITECT: '1' } });
@@ -59,7 +74,7 @@ const PLAN = `# План
 ## Связанные артефакты kb
 —`;
 
-test('TC-39: drill-in с канваса — кубик/стрелка открывают свою сессию, lastSession восстанавливается', async ({
+test('TC-39: drill через кубик архитектора и User-элемент, lastSession восстанавливается', async ({
   agent,
   vscodeWindow,
 }) => {
@@ -87,67 +102,60 @@ test('TC-39: drill-in с канваса — кубик/стрелка откры
   await canvasRoot.waitFor({ state: 'visible', timeout: 15_000 });
 
   // 1. Зафиксировать ожидаемые drill-таргеты прямо с DOM канваса:
-  //    - handoff-стрелка: `data-canvas-edge-session` = id bridge-сессии;
-  //    - architect cube: `data-canvas-drill-session` = тоже id bridge'а
-  //      (она же owned для архитектора);
-  //    - product cube: `data-canvas-drill-session` = id root-сессии
-  //      (продакт — owner root user-agent, а НЕ bridge, где он лишь
-  //      participant; см. unit-тесты на `resolveCubeDrillSession`).
-  //    Ожидаемый drill-id берём из DOM: e2e — это контракт «то, что cube
-  //    обещает в атрибуте, ровно туда и провалится по Enter».
-  const handoffEdge = canvasRoot.locator('[data-canvas-edge="product->architect"]');
-  await expect(handoffEdge).toHaveCount(1);
+  //    - User-элемент: `data-canvas-drill-session` = id корневой
+  //      user-agent сессии (`resolveUserDrillSession`);
+  //    - architect cube: `data-canvas-drill-session` = id bridge'а
+  //      product↔architect (recipient handoff'а — он же owner;
+  //      см. unit-тесты на `resolveCubeDrillSession`).
+  //    Edge'ей коммуникации больше нет (#0042), поэтому единственные
+  //    источники drill-id — кубики и User-элемент.
+  const userElement = canvasRoot.locator('[data-canvas-user]');
   const architectCube = canvasRoot.locator('[data-canvas-role="architect"]');
-  const productCube = canvasRoot.locator('[data-canvas-role="product"]');
+  await expect(userElement).toHaveAttribute('data-canvas-drill-session', /.+/);
   await expect(architectCube).toHaveAttribute('data-canvas-drill-session', /.+/);
-  await expect(productCube).toHaveAttribute('data-canvas-drill-session', /.+/);
-  const edgeBridgeId = await handoffEdge.getAttribute('data-canvas-edge-session');
+  const userDrillId = await userElement.getAttribute('data-canvas-drill-session');
   const architectDrillId = await architectCube.getAttribute('data-canvas-drill-session');
-  const productDrillId = await productCube.getAttribute('data-canvas-drill-session');
-  expect(edgeBridgeId).toBeTruthy();
-  // architect cube и handoff edge должны вести в одну и ту же bridge'у —
-  // первое требование контракта drill-in.
-  expect(architectDrillId).toBe(edgeBridgeId);
-  // product cube НЕ ведёт в bridge: это и есть фикс #0026
-  // (selectActiveSessionForRole vs. ownership).
-  expect(productDrillId).toBeTruthy();
-  expect(productDrillId).not.toBe(edgeBridgeId);
+  expect(userDrillId).toBeTruthy();
+  expect(architectDrillId).toBeTruthy();
+  // User-элемент ведёт в корневую user-agent сессию, а bridge архитектора
+  // — в ОТДЕЛЬНУЮ сессию (recipient handoff'а). Эти id обязаны различаться,
+  // иначе мы потеряем разделение «заказчик ↔ продакт» vs. «продакт ↔
+  // архитектор», которое и есть ценность отдельных drill-точек.
+  expect(architectDrillId).not.toBe(userDrillId);
 
   const architectRow = ui.locator(`button[data-session-id="${architectDrillId}"]`);
-  const productRow = ui.locator(`button[data-session-id="${productDrillId}"]`);
+  const userRow = ui.locator(`button[data-session-id="${userDrillId}"]`);
 
-  // 2. Активация architect cube → таб Чат + выбрана bridge-сессия.
+  // 2. Активация architect cube → таб «Чат» + выбрана его bridge-сессия.
   // focus+Enter вместо pointer-click: SVG `<g>` рендерится в zoom/pan
-  // viewBox; его CSS-bbox может перекрываться соседними элементами
-  // (SessionsPanel) — pointer-hit-test Playwright'а тогда откажет или
-  // отдаст клик не той ноде. У `<g>` есть `tabIndex=0` и onKeyDown
-  // (Enter/Space), вызывающий тот же `onDrillIn`, что и `onClick` —
-  // для пользователя это эквивалентная a11y-активация role="button",
-  // для теста — стабильный путь без зависимости от геометрии.
+  // viewBox, его CSS-bbox может перекрываться соседними элементами
+  // (SessionsPanel) — pointer-hit-test Playwright'а тогда отдаст клик
+  // не той ноде. У `<g>` есть `tabIndex=0` и onKeyDown (Enter/Space),
+  // вызывающий тот же `onDrillIn`, что и `onClick` — для пользователя
+  // это эквивалентная a11y-активация role="button", для теста —
+  // стабильный путь без зависимости от геометрии.
   await architectCube.focus();
   await architectCube.press('Enter');
   await expect(ui.locator('button[data-run-tab="chat"]')).toHaveAttribute('aria-selected', 'true');
   await expect(architectRow).toHaveAttribute('aria-pressed', 'true', { timeout: 5_000 });
 
-  // 3. Назад на канвас → активация handoff-стрелки → та же bridge.
+  // 3. Назад на канвас → активация User-элемента → корневая user↔product
+  //    сессия (а не bridge архитектора): это и есть #0043 — заказчик
+  //    отделён от участников команды, его кубик ведёт в свою встречу.
   await agent.switchToCanvasTab();
-  await handoffEdge.focus();
-  await handoffEdge.press('Enter');
+  await userElement.focus();
+  await userElement.press('Enter');
   await expect(ui.locator('button[data-run-tab="chat"]')).toHaveAttribute('aria-selected', 'true');
-  await expect(architectRow).toHaveAttribute('aria-pressed', 'true');
-
-  // 4. Назад на канвас → активация product cube → выбран `productDrillId`
-  //    (root user-agent сессия), а bridge-ряд снят с выделения.
-  await agent.switchToCanvasTab();
-  await productCube.focus();
-  await productCube.press('Enter');
-  await expect(ui.locator('button[data-run-tab="chat"]')).toHaveAttribute('aria-selected', 'true');
-  await expect(productRow).toHaveAttribute('aria-pressed', 'true', { timeout: 5_000 });
+  await expect(userRow).toHaveAttribute('aria-pressed', 'true', { timeout: 5_000 });
+  // Ряд архитектора в `SessionsPanel` снят с выделения — выбранная
+  // строка ровно одна, и это user-сессия.
   await expect(architectRow).toHaveAttribute('aria-pressed', 'false');
 
-  // 5. Возврат на «Карту», ничего не меняем; снова таб «Чат» —
-  //    подсвечена product-сессия (lastViewedSession восстановилась).
+  // 4. lastViewedSession (#0026): возврат на «Карту», ничего не меняем,
+  //    снова таб «Чат» — подсветка снова на user-сессии (последней,
+  //    где мы были до перехода на «Карту»). Persist'ится под ключом
+  //    `mainArea.lastSession.<runId>` через UI-prefs.
   await agent.switchToCanvasTab();
   await agent.switchToChatTab();
-  await expect(productRow).toHaveAttribute('aria-pressed', 'true', { timeout: 5_000 });
+  await expect(userRow).toHaveAttribute('aria-pressed', 'true', { timeout: 5_000 });
 });

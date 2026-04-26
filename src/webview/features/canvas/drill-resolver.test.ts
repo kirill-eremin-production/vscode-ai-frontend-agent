@@ -193,6 +193,54 @@ describe('resolveCubeDrillSession — приоритеты live и updatedAt', (
   });
 });
 
+/**
+ * Регрессия для AC #0045: «клик по idle-кубику архитектора → последняя
+ * (live) сессия архитектора». Сценарий: ран сделал два архитекторских
+ * захода (например, plan_v1, потом continue после user-intervention →
+ * plan_v2 в той же или новой bridge'е). Drill должен идти в свежайшую,
+ * чтобы пользователь видел самый актуальный диалог с архитектором,
+ * а не старый black-box.
+ */
+describe('resolveCubeDrillSession — несколько owned-сессий архитектора (#0045)', () => {
+  const root = session({
+    id: 's_root',
+    kind: 'user-agent',
+    status: 'done',
+    createdAt: '2026-04-26T10:00:00Z',
+    updatedAt: '2026-04-26T10:05:00Z',
+    participants: [{ kind: 'user' }, { kind: 'agent', role: 'product' }],
+  });
+  const oldBridge = session({
+    id: 's_old',
+    kind: 'agent-agent',
+    status: 'done',
+    parentSessionId: 's_root',
+    createdAt: '2026-04-26T10:06:00Z',
+    updatedAt: '2026-04-26T10:10:00Z',
+    participants: [
+      { kind: 'agent', role: 'product' },
+      { kind: 'agent', role: 'architect' },
+    ],
+  });
+  const freshBridge = session({
+    id: 's_fresh',
+    kind: 'agent-agent',
+    status: 'awaiting_human',
+    parentSessionId: 's_root',
+    createdAt: '2026-04-26T11:00:00Z',
+    updatedAt: '2026-04-26T11:05:00Z',
+    participants: [
+      { kind: 'agent', role: 'product' },
+      { kind: 'agent', role: 'architect' },
+    ],
+  });
+  const m = meta([root, oldBridge, freshBridge], 's_fresh');
+
+  it('architect cube → свежайшая bridge, даже если старая ещё в meta', () => {
+    expect(resolveCubeDrillSession('architect', m)).toBe('s_fresh');
+  });
+});
+
 describe('resolveCubeDrillSession — край: роль не участвует', () => {
   it('роли нет ни в одной сессии → undefined', () => {
     const root = session({
