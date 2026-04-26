@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { layoutCanvas, NODE_W, PAD_X, ROW_STEP_Y } from './layout';
+import { layoutCanvas, NODE_W, PAD_X, PAD_Y, ROW_STEP_Y, USER_DIAMETER } from './layout';
 import type { RunMeta, SessionSummary, UsageAggregate } from '@shared/runs/types';
 
 const ZERO_USAGE: UsageAggregate = {
@@ -209,5 +209,144 @@ describe('layoutCanvas — hierarchy-layout (#0042)', () => {
     expect(result.reportingLines).toHaveLength(2);
     expect(result.reportingLines[0].id).toBe('product--architect');
     expect(result.reportingLines[1].id).toBe('architect--programmer');
+  });
+});
+
+/**
+ * User-элемент над иерархией агентов (#0043). Layout добавляет
+ * круглый аватар над верхним кубиком и линию-репортинг от него к
+ * продакту того же стиля, что между уровнями.
+ */
+describe('layoutCanvas — user element (#0043)', () => {
+  function withProduct(): RunMeta {
+    return meta([
+      session({
+        id: 's1',
+        participants: [{ kind: 'user' }, { kind: 'agent', role: 'product' }],
+      }),
+    ]);
+  }
+
+  it('userElement присутствует всегда — даже на дефолтном рана с одним продактом', () => {
+    const result = layoutCanvas(withProduct());
+    expect(result.userElement).toBeDefined();
+    expect(result.userElement.radius).toBe(USER_DIAMETER / 2);
+    // Размер отличается от кубика — AC «размер и стиль отличаются».
+    expect(USER_DIAMETER).toBeLessThan(NODE_W);
+  });
+
+  it('User расположен над верхним кубиком и выровнен с ним по центру по x', () => {
+    const result = layoutCanvas(withProduct());
+    const product = result.nodes[0];
+    // По вертикали — выше продакта (центр круга < верх кубика).
+    expect(result.userElement.cy).toBeLessThan(product.y);
+    // По горизонтали — на одной оси с центром кубика.
+    expect(result.userElement.cx).toBe(product.x + NODE_W / 2);
+  });
+
+  it('линия-репортинг от User идёт строго вертикально к верху верхнего кубика', () => {
+    const result = layoutCanvas(withProduct());
+    const product = result.nodes[0];
+    const line = result.userElement.line;
+    // x совпадает с осью кубика — линия вертикальная.
+    expect(line.x).toBe(product.x + NODE_W / 2);
+    // Низ линии = верх кубика; верх линии = низ круга User.
+    expect(line.toY).toBe(product.y);
+    expect(line.fromY).toBe(result.userElement.cy + result.userElement.radius);
+    // id предсказуемый — стабильный ключ для React/тестов.
+    expect(line.id).toBe('user--product');
+  });
+
+  it('линия от User лежит выше всех межуровневых линий и не входит в reportingLines', () => {
+    // AC #0043 + комментарий в типе: линия user→product хранится в
+    // userElement.line, а reportingLines — только межуровневые линии
+    // агентов. Это позволяет UI рендерить весь User-блок единым
+    // компонентом и независимо включать/выключать его.
+    const result = layoutCanvas(
+      meta([
+        session({
+          id: 's1',
+          participants: [{ kind: 'agent', role: 'product' }],
+        }),
+        session({
+          id: 's2',
+          participants: [{ kind: 'agent', role: 'architect' }],
+        }),
+      ])
+    );
+    expect(result.reportingLines.map((line) => line.id)).not.toContain('user--product');
+    expect(result.userElement.line.fromY).toBeLessThan(result.reportingLines[0].fromY);
+  });
+
+  it('кубики сдвинуты вниз, чтобы освободить место под User-элемент', () => {
+    // Регрессия: до #0043 верхний кубик сидел на y = PAD_Y. Теперь он
+    // должен быть строго ниже PAD_Y, чтобы над ним помещался User
+    // (круг + воздух). Конкретные значения — деталь реализации; здесь
+    // проверяем только инвариант «кубики ниже PAD_Y».
+    const result = layoutCanvas(withProduct());
+    expect(result.nodes[0].y).toBeGreaterThan(PAD_Y);
+  });
+
+  it('height учитывает зону User-элемента (полотно выше, чем без него)', () => {
+    const result = layoutCanvas(withProduct());
+    // Полотно должно вмещать сам кружок User целиком: его верхний
+    // край лежит на y = PAD_Y, нижний — на cy+radius. Кубик идёт ещё
+    // ниже, поэтому height гарантированно > PAD_Y*2 + USER_DIAMETER.
+    expect(result.height).toBeGreaterThan(PAD_Y * 2 + USER_DIAMETER);
+  });
+
+  it('width не зависит от User-элемента — ось одна с кубиками', () => {
+    const result = layoutCanvas(withProduct());
+    expect(result.width).toBeGreaterThanOrEqual(NODE_W + PAD_X * 2);
+  });
+
+  it('даже при пустых sessions (fallback product) userElement существует и связан с fallback-кубиком', () => {
+    const result = layoutCanvas(meta([]));
+    expect(result.nodes[0].role).toBe('product');
+    expect(result.userElement.line.id).toBe('user--product');
+    expect(result.userElement.line.toY).toBe(result.nodes[0].y);
+  });
+
+  it('User-элемент не зависит от двух- vs трёхуровневых раскладок (всегда над верхним кубиком)', () => {
+    // Ослабление AC «над уровнем product»: верхним всегда оказывается
+    // product (collectPresentRoles сортирует по levelOf), но даже
+    // если бы UI временно отрисовал двух- или трёхуровневую команду,
+    // User по-прежнему стоит над верхним cube. Защищаемся от
+    // регрессии «User случайно привязан к product по-имени».
+    const twoRoles = layoutCanvas(
+      meta([
+        session({
+          id: 's1',
+          participants: [{ kind: 'agent', role: 'product' }],
+        }),
+        session({
+          id: 's2',
+          participants: [{ kind: 'agent', role: 'programmer' }],
+        }),
+      ])
+    );
+    const threeRoles = layoutCanvas(
+      meta([
+        session({
+          id: 's1',
+          participants: [{ kind: 'agent', role: 'product' }],
+        }),
+        session({
+          id: 's2',
+          participants: [{ kind: 'agent', role: 'architect' }],
+        }),
+        session({
+          id: 's3',
+          participants: [{ kind: 'agent', role: 'programmer' }],
+        }),
+      ])
+    );
+    // Линия в обоих случаях привязана к id верхнего кубика.
+    expect(twoRoles.userElement.line.id).toBe('user--product');
+    expect(twoRoles.userElement.line.toY).toBe(twoRoles.nodes[0].y);
+    expect(threeRoles.userElement.line.toY).toBe(threeRoles.nodes[0].y);
+    // Радиус и cy-у от числа агентов не зависят.
+    expect(twoRoles.userElement.cy).toBe(threeRoles.userElement.cy);
+    expect(twoRoles.userElement.radius).toBe(threeRoles.userElement.radius);
   });
 });

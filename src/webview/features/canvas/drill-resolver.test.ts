@@ -1,5 +1,9 @@
 import { describe, it, expect } from 'vitest';
-import { resolveCubeDrillSession, isSessionOwnedBy } from './drill-resolver';
+import {
+  isSessionOwnedBy,
+  resolveCubeDrillSession,
+  resolveUserDrillSession,
+} from './drill-resolver';
 import type { RunMeta, SessionSummary, UsageAggregate } from '@shared/runs/types';
 
 const ZERO_USAGE: UsageAggregate = {
@@ -318,5 +322,119 @@ describe('isSessionOwnedBy — единичные правила', () => {
       participants: [{ kind: 'user' }],
     });
     expect(isSessionOwnedBy(userOnly, 'product', [userOnly])).toBe(false);
+  });
+});
+
+/**
+ * #0043: drill-in по визуальному элементу User ведёт в корневую
+ * user↔product сессию рана. Корневая = `inputFrom === 'user'` И
+ * пустой `prev`. Это тот же контракт, что используется журналом
+ * встреч (#0029) для определения «начала» цепочки.
+ */
+describe('resolveUserDrillSession (#0043)', () => {
+  it('возвращает id корневой user-agent сессии (inputFrom=user, prev=[])', () => {
+    const root = session({
+      id: 's_root',
+      kind: 'user-agent',
+      inputFrom: 'user',
+      prev: [],
+      participants: [{ kind: 'user' }, { kind: 'agent', role: 'product' }],
+    });
+    const bridge = session({
+      id: 's_bridge',
+      kind: 'agent-agent',
+      inputFrom: 'product',
+      prev: ['s_root'],
+      parentSessionId: 's_root',
+      participants: [
+        { kind: 'agent', role: 'product' },
+        { kind: 'agent', role: 'architect' },
+      ],
+    });
+    expect(resolveUserDrillSession(meta([root, bridge], 's_bridge'))).toBe('s_root');
+  });
+
+  it('игнорирует bridge с inputFrom=user, у которой непустой prev', () => {
+    // Гипотетический случай: bridge помечен inputFrom='user' (например,
+    // hybrid-вмешательство), но у него есть prev — это НЕ корень рана,
+    // и user cube не должен туда вести.
+    const root = session({
+      id: 's_root',
+      kind: 'user-agent',
+      inputFrom: 'user',
+      prev: [],
+      participants: [{ kind: 'user' }, { kind: 'agent', role: 'product' }],
+    });
+    const hybridBridge = session({
+      id: 's_bridge',
+      kind: 'agent-agent',
+      inputFrom: 'user',
+      prev: ['s_root'],
+      parentSessionId: 's_root',
+      participants: [
+        { kind: 'agent', role: 'product' },
+        { kind: 'agent', role: 'architect' },
+        { kind: 'user' },
+      ],
+    });
+    expect(resolveUserDrillSession(meta([root, hybridBridge], 's_bridge'))).toBe('s_root');
+  });
+
+  it('если корневой нет — возвращает undefined (клик станет no-op)', () => {
+    // Edge-case AC: meta может не содержать корневой сессии (легаси,
+    // тестовые данные). Резолвер не должен падать — возвращает
+    // undefined, RunCanvas в этом случае не подключает обработчик.
+    const orphan = session({
+      id: 's_o',
+      kind: 'agent-agent',
+      inputFrom: 'product',
+      prev: ['s_missing'],
+      participants: [
+        { kind: 'agent', role: 'product' },
+        { kind: 'agent', role: 'architect' },
+      ],
+    });
+    expect(resolveUserDrillSession(meta([orphan]))).toBeUndefined();
+  });
+
+  it('если по какой-то причине корневых несколько — берёт самую раннюю по createdAt', () => {
+    // AC: «должна быть ровно одна, но если их вдруг несколько — берём
+    // самую раннюю по startedAt». На SessionSummary timestamp называется
+    // `createdAt`, его и используем — детерминированный tie-breaker.
+    const lateRoot = session({
+      id: 's_late',
+      kind: 'user-agent',
+      inputFrom: 'user',
+      prev: [],
+      createdAt: '2026-04-26T11:00:00Z',
+      updatedAt: '2026-04-26T11:00:00Z',
+      participants: [{ kind: 'user' }, { kind: 'agent', role: 'product' }],
+    });
+    const earlyRoot = session({
+      id: 's_early',
+      kind: 'user-agent',
+      inputFrom: 'user',
+      prev: [],
+      createdAt: '2026-04-26T10:00:00Z',
+      updatedAt: '2026-04-26T10:00:00Z',
+      participants: [{ kind: 'user' }, { kind: 'agent', role: 'product' }],
+    });
+    expect(resolveUserDrillSession(meta([lateRoot, earlyRoot]))).toBe('s_early');
+  });
+
+  it('пустой meta.sessions → undefined без падений', () => {
+    expect(resolveUserDrillSession(meta([]))).toBeUndefined();
+  });
+
+  it('legacy-сессия без inputFrom/prev → не считается корневой', () => {
+    // Чистая защита от рассинхрона: если по какой-то причине поле
+    // не нормализовалось при чтении meta.json — лучше отсечь и дать
+    // no-op, чем drill в случайную сессию.
+    const legacy = session({
+      id: 's_legacy',
+      kind: 'user-agent',
+      participants: [{ kind: 'user' }, { kind: 'agent', role: 'product' }],
+    });
+    expect(resolveUserDrillSession(meta([legacy]))).toBeUndefined();
   });
 });

@@ -1,7 +1,7 @@
 import { Component, memo, useEffect, useMemo, useRef, useState } from 'react';
 import type { ReactNode } from 'react';
 import clsx from 'clsx';
-import { AlertCircle, CheckCircle2, HelpCircle, Wrench } from 'lucide-react';
+import { AlertCircle, CheckCircle2, HelpCircle, User as UserIcon, Wrench } from 'lucide-react';
 import type { RunMeta, ToolEvent } from '@shared/runs/types';
 import { Avatar, LoadingState, type Role } from '@shared/ui';
 import {
@@ -15,9 +15,10 @@ import {
   type CanvasLayout,
   type CanvasNode,
   type CanvasReportingLine,
+  type CanvasUserElement,
 } from '../layout';
 import { ownerRoleOfActiveSession, selectActiveSessionForRole } from '../select-active-session';
-import { resolveCubeDrillSession } from '../drill-resolver';
+import { resolveCubeDrillSession, resolveUserDrillSession } from '../drill-resolver';
 
 /**
  * Канвас команды агентов в виде org-chart'а (#0042).
@@ -203,6 +204,30 @@ function CanvasViewport(props: {
         {layout.reportingLines.map((line) => (
           <CanvasReportingLineView key={line.id} line={line} />
         ))}
+        {/*
+         * User-блок (#0043): линия от User к продакту такого же стиля,
+         * что и межуровневые, и сам круглый аватар. Рендерим линию
+         * раньше круга, чтобы аватар перекрывал её конец (как и кубики).
+         * Drill-сессия резолвится один раз — это и контракт e2e через
+         * `data-canvas-drill-session`, и closure для onClick/onKeyDown.
+         */}
+        <CanvasReportingLineView line={layout.userElement.line} />
+        {(() => {
+          const userDrillSessionId = props.onDrillIn
+            ? resolveUserDrillSession(props.meta)
+            : undefined;
+          return (
+            <CanvasUserView
+              element={layout.userElement}
+              drillSessionId={userDrillSessionId}
+              onDrillIn={
+                userDrillSessionId && props.onDrillIn
+                  ? () => props.onDrillIn?.(userDrillSessionId)
+                  : undefined
+              }
+            />
+          );
+        })()}
         {layout.nodes.map((node) => {
           // Резолвим drill-сессию один раз в рендере: это и contract для
           // e2e (через `data-canvas-drill-session` на cube), и одна и та
@@ -257,6 +282,79 @@ function CanvasReportingLineView({ line }: { line: CanvasReportingLine }) {
     />
   );
 }
+
+interface CanvasUserViewProps {
+  element: CanvasUserElement;
+  /**
+   * id корневой user↔product сессии (#0043). Резолвится в `RunCanvas`
+   * через `resolveUserDrillSession`, прокидывается сюда для атрибута
+   * `data-canvas-drill-session` (контракт e2e и диагностика DOM) и
+   * для замыкания onClick/onKeyDown.
+   */
+  drillSessionId?: string;
+  /** Открыть корневую сессию рана; `undefined` — клик no-op. */
+  onDrillIn?: () => void;
+}
+
+/**
+ * Визуальный элемент User над иерархией агентов (#0043).
+ *
+ * Круглый аватар + иконка `User` из lucide. Намеренно отличается от
+ * кубиков агентов формой (круг, не прямоугольник) и размером
+ * (USER_DIAMETER < NODE_H), чтобы передать «User — заказчик, не член
+ * команды». Поведение по клавиатуре — то же, что у кубика: Enter/Space
+ * = активация, role="button", tabIndex=0. memo — для устойчивости к
+ * тикеру времени (props стабильны).
+ */
+const CanvasUserView = memo(function CanvasUserView(props: CanvasUserViewProps) {
+  const { element, drillSessionId, onDrillIn } = props;
+  const interactive = Boolean(onDrillIn);
+  return (
+    <g
+      data-canvas-user
+      data-canvas-drill-session={drillSessionId}
+      onMouseDown={(event) => event.stopPropagation()}
+      onClick={onDrillIn}
+      onKeyDown={(event) => {
+        if (!onDrillIn) return;
+        if (event.key === 'Enter' || event.key === ' ') {
+          event.preventDefault();
+          onDrillIn();
+        }
+      }}
+      tabIndex={interactive ? 0 : undefined}
+      role={interactive ? 'button' : undefined}
+      aria-label="Заказчик"
+      style={interactive ? { cursor: 'pointer' } : undefined}
+    >
+      <circle
+        cx={element.cx}
+        cy={element.cy}
+        r={element.radius}
+        fill="var(--vscode-input-background)"
+        stroke="var(--color-role-user, var(--vscode-focusBorder))"
+        strokeWidth={2}
+      />
+      {/*
+       * Иконка через foreignObject — переиспользуем lucide-react как и
+       * у кубиков. Bounding box в локальных координатах круга:
+       * левый-верхний угол = (cx-r, cy-r), сторона = 2r. Внутри —
+       * центрируем иконку flex'ом. Размер иконки чуть меньше диаметра,
+       * чтобы оставить визуальный «отступ» внутри круга.
+       */}
+      <foreignObject
+        x={element.cx - element.radius}
+        y={element.cy - element.radius}
+        width={element.radius * 2}
+        height={element.radius * 2}
+      >
+        <div className="flex h-full w-full items-center justify-center text-foreground">
+          <UserIcon size={Math.round(element.radius * 1.1)} aria-hidden />
+        </div>
+      </foreignObject>
+    </g>
+  );
+});
 
 interface CanvasNodeViewProps {
   node: CanvasNode;

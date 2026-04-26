@@ -7,4 +7,4 @@
 export { RunCanvas } from './ui/RunCanvas';
 export type { RunCanvasProps } from './ui/RunCanvas';
 export { layoutCanvas } from './layout';
-export type { CanvasNode, CanvasReportingLine, CanvasLayout } from './layout';
+export type { CanvasNode, CanvasReportingLine, CanvasLayout, CanvasUserElement } from './layout';

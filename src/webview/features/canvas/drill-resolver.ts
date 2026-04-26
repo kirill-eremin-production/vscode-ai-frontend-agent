@@ -2,6 +2,41 @@ import type { RunMeta, SessionSummary } from '@shared/runs/types';
 import type { Role } from '@shared/ui';
 
 /**
+ * Корневая user↔product сессия рана (#0043). Идентифицируется по двум
+ * признакам метаданных встречи (#0035):
+ *   - `inputFrom === 'user'` — инициирована пользователем;
+ *   - `prev` пуст — нет родительской сессии.
+ *
+ * Используется для drill-in по визуальному элементу User на канвасе:
+ * клик по аватару пользователя должен открыть именно ту встречу, где
+ * заказчик ставил задачу продакту (а не любую сессию, в которой
+ * формально присутствует user-участник, например hybrid bridge —
+ * для него уже есть отдельный путь через `resolveCubeDrillSession`).
+ *
+ * В каноническом ране такая сессия ровно одна (первая user-agent при
+ * `init`). На случай искажений данных (legacy/тесты) выбирается самая
+ * ранняя по `createdAt` — детерминированно, без зависимости от
+ * порядка хранения.
+ *
+ * Если корневой сессии нет — `undefined`. AC #0043 требует, чтобы
+ * клик в этом случае был no-op без падений: вызывающая сторона
+ * проверяет `undefined` и не подключает обработчик.
+ */
+export function resolveUserDrillSession(meta: RunMeta): string | undefined {
+  const sessions = meta.sessions ?? [];
+  const candidates = sessions.filter(
+    (session) => session.inputFrom === 'user' && (session.prev ?? []).length === 0
+  );
+  if (candidates.length === 0) return undefined;
+  if (candidates.length === 1) return candidates[0].id;
+  // Детерминированный tie-breaker: самая ранняя по `createdAt`.
+  // Сортируем копию, чтобы не мутировать meta.sessions.
+  return [...candidates].sort((left, right) =>
+    left.createdAt < right.createdAt ? -1 : left.createdAt > right.createdAt ? 1 : 0
+  )[0].id;
+}
+
+/**
  * Чистая функция: для роли на канвасе выбирает сессию, в которую
  * должен «провалиться» drill-in по клику на кубик (#0026).
  *

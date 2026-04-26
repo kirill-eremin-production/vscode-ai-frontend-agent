@@ -29,6 +29,19 @@ export const NODE_H = 96;
 export const PAD_X = 32;
 export const PAD_Y = 32;
 /**
+ * Диаметр круглого аватара User (#0043). Намеренно меньше высоты
+ * кубика агента, чтобы визуально подчеркнуть «User — заказчик, не
+ * член иерархии».
+ */
+export const USER_DIAMETER = 48;
+/**
+ * Высота зоны над верхним кубиком, отведённой под User-элемент:
+ * сам кружок + воздух между ним и кубиком product. Воздух ≈ ROW_STEP_Y
+ * минус высота кубика, чтобы линия-репортинг от User к product была
+ * сопоставимой по длине с линиями между уровнями (org-chart-стиль).
+ */
+const USER_AREA_HEIGHT = USER_DIAMETER + (ROW_STEP_Y - NODE_H);
+/**
  * Базовая ширина «полотна» — достаточно для одного кубика по центру.
  * Реальная ширина viewBox мажорно определяется CanvasViewport через
  * ResizeObserver; layout даёт минимально-разумный размер на случай,
@@ -68,14 +81,41 @@ export interface CanvasReportingLine {
   x: number;
 }
 
+/**
+ * Визуальный элемент User над иерархией агентов (#0043).
+ *
+ * User — внешний заказчик, не участник иерархии. На canvas рисуется
+ * круглым аватаром (отличный размер и форма от кубиков) над верхним
+ * агентом. Связан с верхним агентом такой же тонкой статичной линией,
+ * что и кубики между собой — это и есть «репортинг» от заказчика к
+ * команде.
+ */
+export interface CanvasUserElement {
+  /** Координаты центра круга в viewBox-координатах. */
+  cx: number;
+  cy: number;
+  /** Радиус круга. Размер фиксирован, отличается от кубиков агентов. */
+  radius: number;
+  /**
+   * Линия от низа круга до верха верхнего кубика (product). Тип
+   * совпадает с межуровневыми линиями — рендерится тем же визуальным
+   * стилем, без стрелок.
+   */
+  line: CanvasReportingLine;
+}
+
 export interface CanvasLayout {
   nodes: CanvasNode[];
   /**
-   * Линии-репортинги между уровнями. Длина = `nodes.length - 1` для
-   * соседних кубиков (если уровней меньше — соответственно меньше).
-   * Для одного кубика — пустой массив.
+   * Линии-репортинги между уровнями агентов. Длина = `nodes.length - 1`
+   * для соседних кубиков (если уровней меньше — соответственно меньше).
+   * Для одного кубика — пустой массив. Линия от User к продакту в этом
+   * массиве **не** лежит — она часть `userElement.line`, чтобы UI мог
+   * рендерить весь User-блок (круг + линия) одним компонентом.
    */
   reportingLines: CanvasReportingLine[];
+  /** Визуальный элемент User над верхним агентом (#0043). */
+  userElement: CanvasUserElement;
   /** Размер всего полотна — для дефолтного viewBox. */
   width: number;
   height: number;
@@ -131,14 +171,18 @@ export function layoutCanvas(meta: RunMeta): CanvasLayout {
   const presentRoles = collectPresentRoles(meta);
   const lastActivity = computeLastActivity(meta);
 
-  // Центр по горизонтали: x одинаковый для всех кубиков.
+  // Центр по горизонтали: x одинаковый для всех кубиков. Значение
+  // `centerX` — это левый-верхний угол, центр равен `centerX + NODE_W/2`.
   const centerX = PAD_X;
+  // Сдвигаем все кубики вниз на USER_AREA_HEIGHT — место под User-элемент
+  // и линию-репортинг от него к продакту (#0043).
+  const cubeBaseY = PAD_Y + USER_AREA_HEIGHT;
   const nodes: CanvasNode[] = presentRoles.map((role, index) => ({
     id: role,
     role,
     level: levelOf(role),
     x: centerX,
-    y: PAD_Y + index * ROW_STEP_Y,
+    y: cubeBaseY + index * ROW_STEP_Y,
     width: NODE_W,
     height: NODE_H,
     lastActivityAt: lastActivity.get(role),
@@ -161,9 +205,30 @@ export function layoutCanvas(meta: RunMeta): CanvasLayout {
     });
   }
 
+  // User-элемент над верхним кубиком. `centerX + NODE_W/2` — общая
+  // вертикальная ось для всей колонки (User и кубиков), поэтому линия
+  // от User к продакту получается строго вертикальной, как и линии
+  // между уровнями. Радиус и центр круга — вычисляются один раз;
+  // поведение при пустом списке агентов: collectPresentRoles всегда
+  // возвращает хотя бы product, поэтому `nodes[0]` существует.
+  const cubeCenterX = centerX + NODE_W / 2;
+  const userCy = PAD_Y + USER_DIAMETER / 2;
+  const topAgent = nodes[0];
+  const userElement: CanvasUserElement = {
+    cx: cubeCenterX,
+    cy: userCy,
+    radius: USER_DIAMETER / 2,
+    line: {
+      id: `user--${topAgent.role}`,
+      x: cubeCenterX,
+      fromY: userCy + USER_DIAMETER / 2,
+      toY: topAgent.y,
+    },
+  };
+
   const width = Math.max(BASE_WIDTH, NODE_W + PAD_X * 2);
-  const height = PAD_Y * 2 + nodes.length * ROW_STEP_Y;
-  return { nodes, reportingLines, width, height };
+  const height = PAD_Y * 2 + USER_AREA_HEIGHT + nodes.length * ROW_STEP_Y;
+  return { nodes, reportingLines, userElement, width, height };
 }
 
 /**
