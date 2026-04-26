@@ -5,14 +5,18 @@ import clsx from 'clsx';
 import { Avatar, type Role } from '@shared/ui';
 import { formatRelativeTime } from '@shared/lib/time';
 import type { ChatMessage as ChatMessageData } from '@shared/runs/types';
+import { resolveRoleFrom } from '../lib/roles';
 
 /**
  * Одно сообщение чата (#0020) — bubble с аватаром, именем автора,
  * относительным временем и markdown-телом.
  *
  * `from` приходит из storage в формате `user`, `agent:product`,
- * `agent:architect`, `agent:system` (см. `from:` в product-role/run.ts
- * и пр.). Здесь маппим в роль для аватара и в человекочитаемое имя.
+ * `agent:architect`, `agent:programmer`, `agent:system` (см. `from:`
+ * в product-role/run.ts и пр.). Маппинг в роль/имя вынесен в
+ * `../lib/roles.ts`, чтобы тот же справочник переиспользовался шапкой
+ * чата (`ParticipantsHeader`) и системными строками
+ * (`ParticipantJoinedRow`) — #0041.
  *
  * Markdown через `react-markdown` + `remark-gfm` без подсветки синтаксиса —
  * webview уже изолирован, дополнительная sanitize-обёртка не нужна.
@@ -21,26 +25,24 @@ export interface ChatMessageProps {
   message: ChatMessageData;
 }
 
-interface RoleInfo {
-  role: Role;
-  name: string;
-}
-
-function resolveRole(from: string): RoleInfo {
-  if (from === 'user') return { role: 'user', name: 'Вы' };
-  if (from === 'agent:product') return { role: 'product', name: 'Продакт' };
-  if (from === 'agent:architect') return { role: 'architect', name: 'Архитектор' };
-  if (from === 'agent:system') return { role: 'system', name: 'Система' };
-  if (from.startsWith('agent:')) {
-    const rest = from.slice('agent:'.length);
-    return { role: 'system', name: rest.charAt(0).toUpperCase() + rest.slice(1) };
-  }
-  return { role: 'system', name: from };
-}
+/**
+ * Цвет левой границы bubble'а по роли автора (#0041). Для `user` — keep
+ * existing focusBorder (как и до #0041); для `system` — без отдельного
+ * маркера (опасно перегружать; и так есть `opacity-80`). Для агентов —
+ * берём `--color-role-*`, тот же набор, что и в аватарах: одна палитра
+ * на всё UI.
+ */
+const ROLE_BUBBLE_BORDER: Record<Role, string> = {
+  user: 'border-l-[var(--vscode-focusBorder)]',
+  product: 'border-l-[var(--color-role-product)]',
+  architect: 'border-l-[var(--color-role-architect)]',
+  programmer: 'border-l-[var(--color-role-programmer)]',
+  system: 'border-l-[var(--color-role-system)]',
+};
 
 export function ChatMessage(props: ChatMessageProps) {
   const { message } = props;
-  const info = useMemo(() => resolveRole(message.from), [message.from]);
+  const info = useMemo(() => resolveRoleFrom(message.from), [message.from]);
   const time = useMemo(() => formatRelativeTime(message.at), [message.at]);
   const isUser = info.role === 'user';
   const isSystem = info.role === 'system';
@@ -48,10 +50,9 @@ export function ChatMessage(props: ChatMessageProps) {
   return (
     <article
       className={clsx(
-        'chat-message flex gap-2 px-3 py-2 rounded-sm border bg-surface-elevated',
-        isUser
-          ? 'border-border border-l-2 border-l-[var(--vscode-focusBorder)] bg-[var(--vscode-list-hoverBackground)]'
-          : 'border-border-subtle',
+        'chat-message flex gap-2 px-3 py-2 rounded-sm border bg-surface-elevated border-l-2',
+        ROLE_BUBBLE_BORDER[info.role],
+        isUser ? 'border-border bg-[var(--vscode-list-hoverBackground)]' : 'border-border-subtle',
         isSystem && 'opacity-80'
       )}
       data-from={message.from}

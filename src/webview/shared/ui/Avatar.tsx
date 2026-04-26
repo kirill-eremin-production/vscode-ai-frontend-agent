@@ -35,6 +35,7 @@ const SIZE_PX: Record<AvatarSize, number> = {
 const ROLE_BG: Record<Role, string> = {
   product: 'bg-[var(--color-role-product)]',
   architect: 'bg-[var(--color-role-architect)]',
+  programmer: 'bg-[var(--color-role-programmer)]',
   user: 'bg-[var(--color-role-user)]',
   system: 'bg-[var(--color-role-system)]',
 };

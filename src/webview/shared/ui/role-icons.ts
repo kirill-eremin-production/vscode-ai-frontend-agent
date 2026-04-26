@@ -1,4 +1,4 @@
-import { Cog, Compass, Package, User, type LucideIcon } from 'lucide-react';
+import { Code, Cog, Compass, Package, User, type LucideIcon } from 'lucide-react';
 
 /**
  * Маппинг ролей агента на lucide-иконки.
@@ -9,15 +9,20 @@ import { Cog, Compass, Package, User, type LucideIcon } from 'lucide-react';
  * `--color-role-*`, заданных в [src/webview/app/app.css](../../app/app.css).
  *
  * Тип `Role` дублируется здесь намеренно — webview не должен импортировать
- * константы из extension'а (ESLint boundary). Когда добавим новую роль
- * (программист), правка в трёх местах: extension-роли, этот маппинг,
- * `--color-role-*` в app.css.
+ * константы из extension'а (ESLint boundary). Когда добавим новую роль,
+ * правка в трёх местах: extension-роли, этот маппинг, `--color-role-*`
+ * в app.css.
+ *
+ * Роль `programmer` (#0041) — реализационный уровень иерархии команды
+ * (см. `src/extension/team/hierarchy.ts`), берёт иконку `Code` (не
+ * `Wrench`, который занят tool-карточками в `tool-icons.ts`).
  */
-export type Role = 'product' | 'architect' | 'user' | 'system';
+export type Role = 'product' | 'architect' | 'programmer' | 'user' | 'system';
 
 export const roleIcons: Record<Role, LucideIcon> = {
   product: Package,
   architect: Compass,
+  programmer: Code,
   user: User,
   system: Cog,
 };

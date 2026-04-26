@@ -58,6 +58,13 @@
    */
   --color-role-product: var(--vscode-charts-blue);
   --color-role-architect: var(--vscode-charts-purple);
+  /*
+   * `programmer` (#0041) — реализационный уровень иерархии команды.
+   * Берём оранжевый из vscode-charts: чётко отличим от синего (продакт)
+   * и фиолетового (архитектор) во всех трёх темах. Fallback на yellow —
+   * на случай тем, где orange не задан (старые/community-темы).
+   */
+  --color-role-programmer: var(--vscode-charts-orange, var(--vscode-charts-yellow));
   --color-role-user: var(--vscode-charts-green);
   --color-role-system: var(--vscode-descriptionForeground);
 }

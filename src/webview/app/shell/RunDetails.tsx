@@ -12,7 +12,13 @@ import {
 import { RunCanvas } from '@features/canvas';
 import type { ChatMessage, RunMeta, RunStatus, ToolEvent } from '@shared/runs/types';
 import { contextLimitFor, zoneFor } from '@shared/runs/pricing';
-import { ChatFeed, ChatMessage as ChatBubble, ToolCard } from '@features/chat';
+import {
+  ChatFeed,
+  ChatMessage as ChatBubble,
+  ParticipantJoinedRow,
+  ParticipantsHeader,
+  ToolCard,
+} from '@features/chat';
 import type { ToolCardStatus } from '@features/chat';
 import { Button, LoadingState, Skeleton, type Role } from '@shared/ui';
 import { describeRunActivity, type RunActivity } from '@shared/lib/run-status-caption';
@@ -56,6 +62,12 @@ export function RunDetails() {
   const activeRole = inferActiveRole(chat);
   const activity = describeRunActivity({ meta, tools, role: activeRole });
   const tab: RunDetailsTab = selectRunDetailsTab(stateSnapshot, meta.id);
+  // Список участников именно ВИДИМОЙ сессии — не активной (#0041): при
+  // переключении на read-only сессию шапка должна показывать её состав,
+  // а не «текущей комнаты». Live-обновления (новый `participant_joined`)
+  // прилетают через `runs.updated` и обновляют этот список без перезагрузки.
+  const viewedSession = meta.sessions.find((session) => session.id === viewedSessionId);
+  const viewedParticipants = viewedSession?.participants ?? [];
 
   return (
     <div className="run-details flex flex-col min-h-0 h-full">
@@ -111,7 +123,10 @@ export function RunDetails() {
           />
         </div>
       ) : (
-        <Timeline chat={chat} tools={tools} sessionId={viewedSessionId} />
+        <div className="run-details__chat flex flex-col flex-1 min-h-0">
+          <ParticipantsHeader participants={viewedParticipants} />
+          <Timeline chat={chat} tools={tools} sessionId={viewedSessionId} />
+        </div>
       )}
       <Composer
         runId={meta.id}
@@ -300,6 +315,7 @@ type TimelineItem =
   | { kind: 'chat'; key: string; at: string; message: ChatMessage }
   | { kind: 'system'; key: string; at: string; message: string }
   | { kind: 'usage'; key: string; at: string; usage: AssistantUsage }
+  | { kind: 'participant_joined'; key: string; at: string; role: string }
   | ToolCallTimelineItem;
 
 /**
@@ -333,6 +349,9 @@ function Timeline(props: { chat: ChatMessage[]; tools: ToolEvent[]; sessionId: s
     <ChatFeed resetKey={props.sessionId} contentKey={items.length}>
       {items.map((item) => {
         if (item.kind === 'chat') return <ChatBubble key={item.key} message={item.message} />;
+        if (item.kind === 'participant_joined') {
+          return <ParticipantJoinedRow key={item.key} role={item.role} at={item.at} />;
+        }
         if (item.kind === 'system') {
           return (
             <div key={item.key} className="run-details__tool-system text-[11px] text-muted px-1">
@@ -402,11 +421,17 @@ function buildTimeline(chat: ChatMessage[], tools: ToolEvent[]): TimelineItem[] 
       return;
     }
     if (event.kind === 'tool_result') return; // склеен в pair с call'ом ниже
-    // participant_joined (#0036) — системная запись о вступлении роли в
-    // комнату. Рендер в журнале встреч (#0046) появится отдельной задачей;
-    // здесь пока просто скрываем, чтобы лента чата не шумела «Архитектор
-    // присоединился» прямо рядом с обычными сообщениями.
-    if (event.kind === 'participant_joined') return;
+    // participant_joined (#0036, рендер — #0041) — компактная строка
+    // «→ <Роль> присоединился в HH:MM» отдельным элементом ленты.
+    if (event.kind === 'participant_joined') {
+      items.push({
+        kind: 'participant_joined',
+        key: `joined:${event.role}:${event.at}:${index}`,
+        at: event.at,
+        role: event.role,
+      });
+      return;
+    }
     // assistant
     if (!event.tool_calls || event.tool_calls.length === 0) {
       if (event.usage) {
