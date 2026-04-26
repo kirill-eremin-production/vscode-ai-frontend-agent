@@ -11,5 +11,5 @@
       "@ext/*": ["./src/extension/*"]
     }
   },
-  "include": ["src/extension/**/*.ts"]
+  "include": ["src/extension/**/*.ts", "tests/globals.d.ts"]
 }
