@@ -1,4 +1,5 @@
 import { useMemo, useState } from 'react';
+import { FileText } from 'lucide-react';
 import {
   openFile,
   selectSession,
@@ -538,12 +539,13 @@ function ToolEntry(props: { event: ToolEvent }) {
         )}
         {filePath && (
           <button
-            className="run-details__file-link"
+            className="run-details__file-link inline-flex items-center gap-1 text-foreground"
             type="button"
             onClick={() => openFile(toWorkspacePath(filePath))}
             title="Открыть в редакторе"
           >
-            📄 {filePath}
+            <FileText size={12} aria-hidden="true" />
+            {filePath}
           </button>
         )}
       </>

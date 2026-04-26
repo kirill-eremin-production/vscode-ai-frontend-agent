@@ -1,7 +1,7 @@
 ---
 id: 0015
 title: UI-токены и Tailwind 4 поверх vscode-переменных
-status: open
+status: done
 created: 2026-04-26
 ---
 
@@ -41,3 +41,13 @@ created: 2026-04-26
 - US-17.
 - Блокирует: #0016, #0020, #0021, #0022, #0023.
 - Связан: AGENT.md (если есть правило про стили — обновить, добавив раздел про токены и Tailwind).
+
+## Outcome
+
+- Tailwind 4 (CSS-first) подключён через `@tailwindcss/cli` — vite в проекте нет, esbuild остаётся основной сборкой; CLI выбран как «эквивалент» из acceptance.
+- Семантические токены — в [src/webview/app/app.css](src/webview/app/app.css), все маппятся на `var(--vscode-*)` с fallback'ами; темы переключаются без перезагрузки.
+- Сборка CSS — `npm run build:webview-css` (выход `out/webview/app.css`), включена в общий `build`/`watch`. Подключается раньше `media/main.css`, чтобы unlayered ad-hoc-стили перебивали Tailwind preflight на время миграции (#0016+).
+- Демо-рефакторинг — кнопка-ссылка на файл в [src/webview/features/run-list/ui/RunDetails.tsx](src/webview/features/run-list/ui/RunDetails.tsx) переведена на utility + token классы (`inline-flex items-center gap-1 text-foreground`); 📄 заменено на `<FileText/>` из `lucide-react`.
+- `clsx` добавлен; `tailwind-merge` намеренно не подключён — конфликтов классов нет.
+- CSS modules инфраструктуру не поднимали (esbuild ≥0.24 умеет нативно, ставится одной правкой) — записано в AGENT.md как опция для #0016+, поднимет первый компонент, которому понадобится.
+- AGENT.md дополнен разделом «Стили webview'а: токены и Tailwind».

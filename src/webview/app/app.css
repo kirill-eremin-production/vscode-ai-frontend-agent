@@ -1,0 +1,63 @@
+/*
+ * Глобальный CSS webview'а: Tailwind 4 (CSS-first) + семантические токены,
+ * привязанные к CSS-переменным VS Code.
+ *
+ * Почему так:
+ *  - Цвета **обязаны** идти из `var(--vscode-*)`, иначе переключение темы
+ *    light/dark/high-contrast ломает внешний вид. VS Code обновляет эти
+ *    переменные на корневом элементе webview'а в runtime — Tailwind 4
+ *    в build-time их не «замораживает», т.к. в `@theme` мы храним именно
+ *    `var(...)`-выражения, а не вычисленные цвета.
+ *  - Tailwind 4 сам поднимает свои стили в cascade-layer'ы (`base`,
+ *    `components`, `utilities`), а старый `media/main.css` остаётся вне
+ *    layer'ов и поэтому имеет более высокий приоритет — это даёт
+ *    плавный переход: ad-hoc CSS продолжает работать, новые компоненты
+ *    идут на токены. Сносить `media/main.css` будем итеративно в #0016+.
+ *
+ * Правила добавления токена:
+ *  1) семантическое имя (роль), а не оттенок (`bg-surface`, не `bg-zinc-900`);
+ *  2) маппинг — на ближайшую vscode-переменную; для high-contrast темы
+ *     дополнительные условия не нужны, vscode сам подменит значение;
+ *  3) если подходящей vscode-переменной нет — взять fallback через
+ *     запятую внутри `var()`, чтобы при отсутствии темы цвет не «съезжал»
+ *     в transparent.
+ */
+
+@import 'tailwindcss';
+
+@theme {
+  /* ── Поверхности ───────────────────────────────────────────────────── */
+  --color-surface: var(--vscode-editor-background);
+  --color-surface-elevated: var(--vscode-editorWidget-background, var(--vscode-editor-background));
+  --color-surface-overlay: var(--vscode-menu-background, var(--vscode-editor-background));
+
+  /* ── Текст ─────────────────────────────────────────────────────────── */
+  --color-foreground: var(--vscode-foreground);
+  --color-muted: var(--vscode-descriptionForeground, var(--vscode-foreground));
+  --color-disabled: var(--vscode-disabledForeground, var(--vscode-foreground));
+
+  /* ── Бордеры ───────────────────────────────────────────────────────── */
+  --color-border: var(--vscode-panel-border, transparent);
+  --color-border-subtle: var(--vscode-widget-border, var(--vscode-panel-border, transparent));
+  --color-border-focus: var(--vscode-focusBorder);
+
+  /* ── Акценты ──────────────────────────────────────────────────────── */
+  --color-accent: var(--vscode-button-background);
+  --color-accent-foreground: var(--vscode-button-foreground);
+  --color-danger: var(--vscode-errorForeground);
+  --color-warning: var(--vscode-editorWarning-foreground, var(--vscode-charts-yellow));
+  --color-success: var(--vscode-charts-green);
+
+  /*
+   * ── Роли агентов ─────────────────────────────────────────────────────
+   * На canvas (#0023+) и в аватарах разных ролей нужен стабильный набор
+   * цветов, отличимых друг от друга в любой теме. Берём из vscode badge/
+   * charts палитры — они подобраны под все три темы и не «убегут» при
+   * смене темы. Конкретные оттенки можно подкрутить, когда canvas
+   * появится; сейчас фиксируем интерфейс.
+   */
+  --color-role-product: var(--vscode-charts-blue);
+  --color-role-architect: var(--vscode-charts-purple);
+  --color-role-user: var(--vscode-charts-green);
+  --color-role-system: var(--vscode-descriptionForeground);
+}

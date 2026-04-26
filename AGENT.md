@@ -48,6 +48,17 @@ ESLint-границы трактуют `src/extension/` как единый эл
 - Имена моделей **захардкожены литералами** в местах использования. В settings не выносим, пока не нужно переключать без пересборки. Смена модели = правка константы + комментарий рядом.
 - На текущем этапе только OpenRouter, ключ один.
 
+## Стили webview'а: токены и Tailwind
+
+С #0015 webview оформляется через семантические токены поверх vscode-переменных + Tailwind 4 (CSS-first).
+
+- **Источник токенов** — [src/webview/app/app.css](src/webview/app/app.css). Цвета — только через `var(--vscode-*)`, иначе ломается переключение light/dark/high-contrast. Новый цвет добавляешь там же: семантическое имя (`bg-surface`, не `bg-zinc-900`) → маппинг на ближайшую vscode-переменную (с fallback'ом через запятую внутри `var()`).
+- **Сборка CSS** — `npm run build:webview-css` (через `@tailwindcss/cli`, выход — `out/webview/app.css`). Подключается раньше `media/main.css`, поэтому unlayered ad-hoc-стили из `media/main.css` имеют приоритет над layered Tailwind'ом. Это даёт плавную миграцию: новые компоненты идут на токены, старые работают как есть, переписываем итеративно (#0016+).
+- **В компонентах** используем utility-классы Tailwind (`inline-flex`, `gap-1`, `border`) и токенные классы (`bg-surface`, `text-foreground`, `border-border-focus`). Inline-стили и точечные цвета — нет: они ломают темы.
+- **Иконки** — `lucide-react` (а не emoji). Размер задаём через `size={N}`, цвет наследуется (`currentColor`) — попадает под токен `text-*`.
+- **Условная сборка классов** — `clsx` (уже в зависимостях). `tailwind-merge` сейчас не нужен: конфликтов классов нет.
+- **CSS modules** — допустимы для «нестандартных» компонентов со сложной версткой/состояниями (`&:hover .child`, анимации, сетки), где Tailwind становится нечитаемым. esbuild ≥0.24 поддерживает `*.module.css` нативно (loader `local-css`), Vite не нужен. Пока инфраструктура не подключена — первый компонент, которому это понадобится, поднимает её сам: добавляет `<link>` на `out/webview/main.css` в [html.ts](src/extension/webview/html.ts) (esbuild эмитит CSS-бандл рядом с `main.js`, как только появится первый импорт `.module.css`) и `declare module '*.module.css'` в `src/webview/global.d.ts` для типов. Базовые токены и spacing внутри модулей — через `var(--color-*)` или `@apply`, чтобы темы продолжали переключаться.
+
 ## Тесты
 
 **Unit** — `src/**/*.test.ts` рядом с кодом. Запуск: `npm run test:unit` (vitest, Node, без JSDOM). Конфиг — [vitest.config.ts](vitest.config.ts), мок `vscode` — [tests/setup-vscode.ts](tests/setup-vscode.ts). Файловые тесты гоняют реальный `os.tmpdir()`, не моки fs.
