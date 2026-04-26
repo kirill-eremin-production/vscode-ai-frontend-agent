@@ -1,10 +1,17 @@
-import { Component, useEffect, useMemo, useRef, useState } from 'react';
+import { Component, memo, useEffect, useMemo, useRef, useState } from 'react';
 import type { ReactNode } from 'react';
 import clsx from 'clsx';
+import { AlertCircle, CheckCircle2, HelpCircle, Wrench } from 'lucide-react';
 import type { RunMeta, ToolEvent } from '@shared/runs/types';
-import { Avatar, type Role } from '@shared/ui';
-import { describeRunActivity } from '@shared/lib/run-status-caption';
+import { Avatar, LoadingState, type Role } from '@shared/ui';
+import {
+  describeRunActivity,
+  type RunActivity,
+  type RunActivityKind,
+} from '@shared/lib/run-status-caption';
+import { formatRelativeTime } from '@shared/lib/time';
 import { layoutCanvas, type CanvasEdge, type CanvasLayout, type CanvasNode } from '../layout';
+import { ownerRoleOfActiveSession, selectActiveSessionForRole } from '../select-active-session';
 
 /**
  * Канвас команды агентов (#0023, foundation).
@@ -34,17 +41,43 @@ export function RunCanvas(props: RunCanvasProps) {
 
 function RunCanvasInner({ meta, tools }: RunCanvasProps) {
   const layout = useMemo(() => layoutCanvas(meta), [meta]);
+  // Один тикер на канвас (а не на каждый кубик) — перерасчёт «N мин назад».
+  // 60 сек хватает: меньшая разрешающая способность чем у formatRelativeTime.
+  const now = useNowTicker(60_000);
   return (
     <div className="run-canvas relative h-full w-full overflow-hidden bg-[var(--vscode-editor-background)]">
-      <CanvasViewport layout={layout} meta={meta} tools={tools} />
+      <CanvasViewport layout={layout} meta={meta} tools={tools} now={now} />
     </div>
   );
+}
+
+/**
+ * Возвращает «текущее время» в виде Date, обновляемое каждые `intervalMs`.
+ * Один setInterval на канвас — кубики получают тот же `now` через props,
+ * пересчитывают «N минут назад» в render'е без собственного state.
+ *
+ * Live-region обновлений: смены статуса (`runs.updated` и др.) едут через
+ * store и сами триггерят ререндер; этот тикер нужен только для деградации
+ * относительного времени, чтобы «1 мин» становился «2 мин» без события.
+ */
+function useNowTicker(intervalMs: number): Date {
+  const [now, setNow] = useState(() => new Date());
+  useEffect(() => {
+    const id = window.setInterval(() => setNow(new Date()), intervalMs);
+    return () => window.clearInterval(id);
+  }, [intervalMs]);
+  return now;
 }
 
 const MIN_ZOOM = 0.4;
 const MAX_ZOOM = 2.5;
 
-function CanvasViewport(props: { layout: CanvasLayout; meta: RunMeta; tools: ToolEvent[] }) {
+function CanvasViewport(props: {
+  layout: CanvasLayout;
+  meta: RunMeta;
+  tools: ToolEvent[];
+  now: Date;
+}) {
   const { layout } = props;
   const containerRef = useRef<HTMLDivElement>(null);
   const [zoom, setZoom] = useState(1);
@@ -176,7 +209,8 @@ function CanvasViewport(props: { layout: CanvasLayout; meta: RunMeta; tools: Too
           <CanvasNodeView
             key={node.id}
             node={node}
-            label={labelForNode(node, props.meta, props.tools)}
+            activity={activityForNode(node, props.meta, props.tools)}
+            now={props.now}
           />
         ))}
       </svg>
@@ -190,11 +224,34 @@ function CanvasViewport(props: { layout: CanvasLayout; meta: RunMeta; tools: Too
   );
 }
 
-function CanvasNodeView(props: { node: CanvasNode; label: string }) {
-  const { node, label } = props;
+interface CanvasNodeViewProps {
+  node: CanvasNode;
+  activity: RunActivity;
+  now: Date;
+}
+
+/**
+ * Кубик роли. memo — чтобы общий тикер `now` не пересоздавал ноду без
+ * необходимости (props стабильны: layout пересчитывается только на
+ * смену meta, activity — чистая функция от meta+tools).
+ *
+ * Все `data-canvas-*`-атрибуты — стабильные хуки для e2e (TC-37).
+ * Цвет бордера и иконка-бейдж зависят от `activity.kind`:
+ *  - failed → красный бордер + AlertCircle;
+ *  - awaiting_user → warning-бордер + HelpCircle;
+ *  - awaiting_human → нейтральный + бейдж «Готово» (CheckCircle2);
+ *  - running thinking/tool → нейтральный + LoadingState внутри;
+ *  - idle/done → нейтральный без декораций.
+ */
+const CanvasNodeView = memo(function CanvasNodeView(props: CanvasNodeViewProps) {
+  const { node, activity, now } = props;
+  const tone = toneForKind(activity.kind);
+  const showSpinner = activity.kind === 'thinking' || activity.kind === 'tool';
+  const relTime = node.lastActivityAt ? formatRelativeTime(node.lastActivityAt, now) : undefined;
   return (
     <g
       data-canvas-role={node.role}
+      data-canvas-activity={activity.kind}
       transform={`translate(${node.x}, ${node.y})`}
       onMouseDown={(e) => e.stopPropagation()}
     >
@@ -204,7 +261,8 @@ function CanvasNodeView(props: { node: CanvasNode; label: string }) {
         rx={6}
         ry={6}
         fill="var(--vscode-input-background)"
-        stroke="var(--border-subtle, var(--vscode-input-border, #444))"
+        stroke={tone.borderColor}
+        strokeWidth={tone.borderWidth}
       />
       {/* Цветная полоса акцента слева — по роли (см. issue notes) */}
       <rect
@@ -222,15 +280,75 @@ function CanvasNodeView(props: { node: CanvasNode; label: string }) {
           <div className="flex items-center gap-2 min-w-0">
             <Avatar role={node.role} size="sm" shape="circle" />
             <span className="font-semibold truncate">{ROLE_LABEL[node.role]}</span>
+            <CornerBadge kind={activity.kind} />
           </div>
-          <div className="text-[11px] text-muted truncate">{label}</div>
-          {node.lastActivityAt && (
-            <div className="text-[10px] text-muted/80">{formatTime(node.lastActivityAt)}</div>
+          <div
+            className="text-[11px] text-muted truncate"
+            data-canvas-activity-label
+            title={activity.label}
+          >
+            {showSpinner ? <LoadingState label={activity.label} /> : activity.label || '—'}
+          </div>
+          {relTime && (
+            <div className="text-[10px] text-muted/80" title={relTime.tooltip}>
+              {relTime.label}
+            </div>
           )}
         </div>
       </foreignObject>
     </g>
   );
+});
+
+interface NodeTone {
+  borderColor: string;
+  borderWidth: number;
+}
+
+function toneForKind(kind: RunActivityKind): NodeTone {
+  switch (kind) {
+    case 'failed':
+      return {
+        borderColor: 'var(--vscode-inputValidation-errorBorder, var(--vscode-errorForeground))',
+        borderWidth: 2,
+      };
+    case 'awaiting_user':
+      return {
+        borderColor: 'var(--vscode-inputValidation-warningBorder, var(--vscode-charts-yellow))',
+        borderWidth: 2,
+      };
+    default:
+      return {
+        borderColor: 'var(--border-subtle, var(--vscode-input-border, #444))',
+        borderWidth: 1,
+      };
+  }
+}
+
+/**
+ * Уголковая иконка-бейдж в правой части шапки. Только для статусов,
+ * которые имеет смысл подсвечивать визуально кроме подписи.
+ * `aria-hidden`: смысл уже передан текстом подписи и `role="status"`
+ * внутри LoadingState — иконка чисто декоративная.
+ */
+function CornerBadge({ kind }: { kind: RunActivityKind }): ReactNode {
+  const cls = 'ml-auto shrink-0 h-3.5 w-3.5';
+  switch (kind) {
+    case 'failed':
+      return (
+        <AlertCircle aria-hidden className={clsx(cls, 'text-[var(--vscode-errorForeground)]')} />
+      );
+    case 'awaiting_user':
+      return <HelpCircle aria-hidden className={clsx(cls, 'text-[var(--vscode-charts-yellow)]')} />;
+    case 'awaiting_human':
+      return (
+        <CheckCircle2 aria-hidden className={clsx(cls, 'text-[var(--vscode-charts-green)]')} />
+      );
+    case 'tool':
+      return <Wrench aria-hidden className={clsx(cls, 'animate-pulse text-muted')} />;
+    default:
+      return null;
+  }
 }
 
 function CanvasEdgeView(props: {
@@ -312,16 +430,45 @@ const ROLE_LABEL: Record<Role, string> = {
   system: 'Система',
 };
 
-function labelForNode(node: CanvasNode, meta: RunMeta, tools: ToolEvent[]): string {
-  if (node.role === 'user') return 'участник';
-  const activity = describeRunActivity({ meta, tools, role: node.role });
-  return activity.label || 'idle';
+/**
+ * Живая активность кубика (#0024). Чистая функция — на канвасе она же
+ * пересчитывается на каждый ререндер store'а (`runs.updated` /
+ * `runs.message.appended` / `runs.tool.appended`), что и даёт
+ * реактивность без отдельной подписки.
+ *
+ * Логика:
+ *  - User-кубик (только в hybrid'е) подсвечен в `awaiting_user_input`
+ *    как «слово за тобой», в остальных случаях — нейтральный.
+ *  - Кубик роли — описывается статусом «её» сессии. Но живой статус
+ *    (thinking/tool) показывается только владельцу активной сессии:
+ *    после handoff'а у продакта статус сессии может оставаться, скажем,
+ *    `awaiting_human`, но визуально это уже «закончил бриф», а не
+ *    активная работа. Так избегаем «двух одновременно работающих»
+ *    кубиков на момент handoff'а (см. acceptance).
+ */
+function activityForNode(node: CanvasNode, meta: RunMeta, tools: ToolEvent[]): RunActivity {
+  if (node.role === 'user') {
+    if (meta.status === 'awaiting_user_input') {
+      return { kind: 'awaiting_user', label: 'Слово за тобой' };
+    }
+    return { kind: 'idle', label: 'участник' };
+  }
+
+  const session = selectActiveSessionForRole(meta, node.role);
+  if (!session) return { kind: 'idle', label: '—' };
+
+  const activeOwner = ownerRoleOfActiveSession(meta);
+  if (activeOwner !== node.role) {
+    return { kind: 'idle', label: idleArtifactLabel(node.role, meta) };
+  }
+
+  return describeRunActivity({ meta: { status: session.status }, tools, role: node.role });
 }
 
-function formatTime(at: string): string {
-  const d = new Date(at);
-  if (Number.isNaN(d.getTime())) return at;
-  return d.toLocaleTimeString('ru-RU', { hour: '2-digit', minute: '2-digit' });
+function idleArtifactLabel(role: Role, meta: RunMeta): string {
+  if (role === 'product' && meta.briefPath) return 'закончил бриф';
+  if (role === 'architect' && meta.planPath) return 'закончил план';
+  return '—';
 }
 
 interface CanvasErrorBoundaryProps {
