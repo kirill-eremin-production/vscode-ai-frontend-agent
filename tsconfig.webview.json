@@ -10,7 +10,6 @@
     "noEmit": true,
     "paths": {
       "@app/*": ["./src/webview/app/*"],
-      "@pages/*": ["./src/webview/pages/*"],
       "@features/*": ["./src/webview/features/*"],
       "@shared/*": ["./src/webview/shared/*"]
     }

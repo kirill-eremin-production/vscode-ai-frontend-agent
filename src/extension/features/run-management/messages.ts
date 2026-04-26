@@ -100,13 +100,40 @@ export interface EditorOpenRequest {
   path: string;
 }
 
+/**
+ * Сохранить значение UI-префа в `globalState` extension'а. Тонкий
+ * generic канал: ключ — произвольная строка, значение — JSON-сериализуемое.
+ *
+ * Введён под #0017 (collapsed-состояние сайдбаров). Намеренно generic,
+ * чтобы #0024 (per-run last-viewed tab) и #0026 (canvas zoom) могли
+ * пользоваться тем же транспортом без новых message-типов.
+ */
+export interface StateSetUiPrefRequest {
+  type: 'state.setUiPref';
+  key: string;
+  value: unknown;
+}
+
+/**
+ * Запросить мапу всех сохранённых UI-префов. Webview шлёт это при
+ * старте, extension отвечает `state.uiPrefs.result`. До прихода ответа
+ * webview работает с дефолтами — это безопасно: первый рендер всё равно
+ * нужен мгновенно, а пользователь свои сохранённые значения увидит
+ * через ~миллисекунды.
+ */
+export interface StateGetUiPrefsRequest {
+  type: 'state.getUiPrefs';
+}
+
 export type WebviewToExtensionMessage =
   | RunsCreateRequest
   | RunsListRequest
   | RunsGetRequest
   | RunsSetApiKeyRequest
   | RunsUserMessageRequest
-  | EditorOpenRequest;
+  | EditorOpenRequest
+  | StateSetUiPrefRequest
+  | StateGetUiPrefsRequest;
 
 /* ── Extension → Webview ─────────────────────────────────────────── */
 
@@ -231,6 +258,15 @@ export interface RunsToolAppendedEvent {
   event: ToolEvent;
 }
 
+/**
+ * Ответ на `state.getUiPrefs` — текущая мапа всех сохранённых UI-префов.
+ * Если ничего ещё не сохраняли — приходит `{}`.
+ */
+export interface StateUiPrefsResult {
+  type: 'state.uiPrefs.result';
+  prefs: Record<string, unknown>;
+}
+
 export type ExtensionToWebviewMessage =
   | RunsListResult
   | RunsGetResult
@@ -239,4 +275,5 @@ export type ExtensionToWebviewMessage =
   | RunsUpdatedEvent
   | RunsAskUserEvent
   | RunsMessageAppendedEvent
-  | RunsToolAppendedEvent;
+  | RunsToolAppendedEvent
+  | StateUiPrefsResult;

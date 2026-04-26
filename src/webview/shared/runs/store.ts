@@ -54,7 +54,25 @@ interface RunsState {
    * по той же схеме, что и `selectedBrief` (см. issue #0004).
    */
   selectedPlan: string | undefined;
+  /**
+   * Свёрнут ли левый сайдбар (RunListPanel). Persist'ится через UI-префы
+   * (#0017) — состояние переживает перезапуск VS Code. На узком окне
+   * (< 700px) при первом старте инициализируется в true (см. useRunsWiring).
+   */
+  leftPanelCollapsed: boolean;
+  /** Свёрнут ли правый сайдбар (SessionsPanel). См. leftPanelCollapsed. */
+  rightPanelCollapsed: boolean;
+  /**
+   * Режим main-area: 'run-details' — карточка выбранного рана,
+   * 'new-run' — форма создания нового рана (#0018, пока заглушка),
+   * 'empty' — приглашение «выберите ран». Контракт с #0017: переключается
+   * через `startNewRun()` и `selectRun()` (последний автоматически
+   * возвращает в 'run-details').
+   */
+  mainAreaMode: MainAreaMode;
 }
+
+export type MainAreaMode = 'run-details' | 'new-run' | 'empty';
 
 const initialState: RunsState = {
   runs: [],
@@ -65,7 +83,28 @@ const initialState: RunsState = {
   pendingByRun: {},
   selectedBrief: undefined,
   selectedPlan: undefined,
+  leftPanelCollapsed: false,
+  rightPanelCollapsed: false,
+  mainAreaMode: 'empty',
 };
+
+/**
+ * Ключи UI-префов в `globalState`. Держим централизованно, чтобы случайно
+ * не разъехаться: store пишет `leftPanelCollapsed`, а extension читает
+ * `leftCollapsed` — такая опечатка тут невозможна.
+ */
+const UI_PREF_KEYS = {
+  leftPanelCollapsed: 'shell.leftPanelCollapsed',
+  rightPanelCollapsed: 'shell.rightPanelCollapsed',
+} as const;
+
+/**
+ * Порог узкого окна, ниже которого обе панели по умолчанию свёрнуты
+ * (#0017 acceptance). Применяется только если в UI-префах ничего не
+ * сохранено — т.е. при первом запуске; явный выбор пользователя всегда
+ * перебивает порог.
+ */
+const NARROW_WINDOW_PX = 700;
 
 /**
  * Текущее состояние и подписчики живут в модуле как обычные переменные.
@@ -106,7 +145,9 @@ type WebviewToExtensionMessage =
   | { type: 'runs.get'; id: string; sessionId?: string }
   | { type: 'runs.setApiKey' }
   | { type: 'runs.user.message'; runId: string; text: string; finalize?: boolean }
-  | { type: 'editor.open'; path: string };
+  | { type: 'editor.open'; path: string }
+  | { type: 'state.setUiPref'; key: string; value: unknown }
+  | { type: 'state.getUiPrefs' };
 
 function send(message: WebviewToExtensionMessage): void {
   vscode.postMessage(message);
@@ -133,6 +174,9 @@ export function selectRun(id: string): void {
   // даже до прихода `runs.get.result`.
   setState((prev) => ({
     ...prev,
+    // Выбор рана всегда возвращает main-area в режим деталей —
+    // даже если до этого пользователь открыл форму создания.
+    mainAreaMode: 'run-details',
     selectedId: id,
     // selectedSessionId сбрасываем на undefined — это означает «активная
     // сессия по умолчанию». Конкретный id придёт в runs.get.result и
@@ -225,6 +269,41 @@ export function sendFinalizeSignal(runId: string): void {
 }
 
 /**
+ * Перевести main-area в режим создания нового рана (#0017/#0018).
+ * Сама форма пока заглушка — реальная реализация в #0018.
+ *
+ * Намеренно НЕ сбрасываем `selectedId`: вернувшись из формы (например,
+ * кликом по рану в списке), пользователь должен видеть тот же выбор,
+ * что и до перехода в new-run.
+ */
+export function startNewRun(): void {
+  setState((prev) => ({ ...prev, mainAreaMode: 'new-run' }));
+}
+
+/**
+ * Сохранить значение UI-префа: локально применяет немедленно, потом
+ * шлёт `state.setUiPref` в extension для persist'а в `globalState`.
+ * Optimistic update оставляет UI отзывчивым — даже если extension
+ * сейчас не отвечает (host перезапускается), визуально префы работают.
+ */
+export function setUiPref(key: string, value: unknown): void {
+  if (key === UI_PREF_KEYS.leftPanelCollapsed && typeof value === 'boolean') {
+    setState((prev) => ({ ...prev, leftPanelCollapsed: value }));
+  } else if (key === UI_PREF_KEYS.rightPanelCollapsed && typeof value === 'boolean') {
+    setState((prev) => ({ ...prev, rightPanelCollapsed: value }));
+  }
+  send({ type: 'state.setUiPref', key, value });
+}
+
+/** Удобные типизированные обёртки над `setUiPref` — используют UI-компоненты. */
+export function setLeftPanelCollapsed(collapsed: boolean): void {
+  setUiPref(UI_PREF_KEYS.leftPanelCollapsed, collapsed);
+}
+export function setRightPanelCollapsed(collapsed: boolean): void {
+  setUiPref(UI_PREF_KEYS.rightPanelCollapsed, collapsed);
+}
+
+/**
  * Открыть файл из workspace в новой вкладке редактора. Путь — строго
  * относительный от корня workspace (например, `.agents/knowledge/product/...`).
  * Используется при клике по ссылкам в карточках tool_result-ов.
@@ -259,7 +338,8 @@ type ExtensionToWebviewMessage =
   | { type: 'runs.updated'; meta: RunMeta }
   | { type: 'runs.askUser'; runId: string; ask: PendingAsk }
   | { type: 'runs.message.appended'; runId: string; sessionId: string; message: ChatMessage }
-  | { type: 'runs.tool.appended'; runId: string; sessionId: string; event: ToolEvent };
+  | { type: 'runs.tool.appended'; runId: string; sessionId: string; event: ToolEvent }
+  | { type: 'state.uiPrefs.result'; prefs: Record<string, unknown> };
 
 /**
  * Хук-подписчик, который должен быть установлен ровно один раз на
@@ -292,9 +372,29 @@ export function useRunsWiring(): void {
             ...prev,
             runs: [data.meta, ...prev.runs.filter((run) => run.id !== data.meta.id)],
             selectedId: data.meta.id,
+            // Свежесозданный ран автоматически открывает свой run-details:
+            // если до этого main-area висела в режиме 'new-run' (форма
+            // создания) — после успешного создания возвращаемся в детали.
+            mainAreaMode: 'run-details',
             selectedDetails: { meta: data.meta, chat: [], tools: [] },
             pendingAsk: undefined,
           }));
+          return;
+        }
+        case 'state.uiPrefs.result': {
+          // Восстанавливаем сохранённое состояние сайдбаров. Если ключа
+          // нет в мапе — оставляем то, что положил порог NARROW_WINDOW_PX
+          // (первый запуск на узком окне → обе свёрнуты). Это даёт
+          // правильный layout без явного выбора пользователя.
+          setState((prev) => {
+            const left = data.prefs[UI_PREF_KEYS.leftPanelCollapsed];
+            const right = data.prefs[UI_PREF_KEYS.rightPanelCollapsed];
+            return {
+              ...prev,
+              leftPanelCollapsed: typeof left === 'boolean' ? left : prev.leftPanelCollapsed,
+              rightPanelCollapsed: typeof right === 'boolean' ? right : prev.rightPanelCollapsed,
+            };
+          });
           return;
         }
         case 'runs.get.result': {
@@ -451,9 +551,24 @@ export function useRunsWiring(): void {
 
     window.addEventListener('message', onMessage);
 
+    // На первом старте применяем порог узкого окна: если сохранённых
+    // префов ещё нет (см. `state.uiPrefs.result` ниже), пользователь
+    // увидит обе панели свёрнутыми — иначе на узком sidebar-view они
+    // съели бы всю ширину main-area.
+    if (typeof window !== 'undefined' && window.innerWidth < NARROW_WINDOW_PX) {
+      setState((prev) => ({
+        ...prev,
+        leftPanelCollapsed: true,
+        rightPanelCollapsed: true,
+      }));
+    }
+
     // При первом монтировании сразу запрашиваем актуальный список —
     // иначе при открытии webview пользователь увидит пустой экран.
     requestRunsList();
+    // И параллельно — сохранённые UI-префы. Ответ перетрёт дефолты
+    // выше, если пользователь раньше явно менял состояние сайдбаров.
+    send({ type: 'state.getUiPrefs' });
 
     return () => window.removeEventListener('message', onMessage);
   }, []);

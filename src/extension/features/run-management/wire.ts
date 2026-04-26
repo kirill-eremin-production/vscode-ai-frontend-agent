@@ -141,6 +141,14 @@ export function wireRunMessages(
           await openWorkspaceFile(msg.path);
           return;
         }
+        case 'state.getUiPrefs': {
+          send({ type: 'state.uiPrefs.result', prefs: readUiPrefs(context) });
+          return;
+        }
+        case 'state.setUiPref': {
+          await writeUiPref(context, msg.key, msg.value);
+          return;
+        }
         default: {
           // Защита от не-исчерпанного switch: если в union добавится
           // новый вариант, а кейс забудут — TS подсветит ошибкой.
@@ -327,6 +335,33 @@ async function ensureUserParticipant(runId: string, sessionId: string): Promise<
     // sessionId всегда валиден (только что в неё писали), но на всякий
     // случай не даём упасть всему обработчику сообщения.
   }
+}
+
+/**
+ * UI-префы хранятся одной мапой под единым ключом в `globalState`.
+ * Один ключ вместо `uiPref:<key>` ради двух вещей: атомарного чтения
+ * всей мапы при старте webview и тривиального дебага через VS Code
+ * `Developer: Show Workspace Storage` (видно одно поле, а не россыпь).
+ */
+const UI_PREFS_KEY = 'aiFrontendAgent.uiPrefs';
+
+function readUiPrefs(context: vscode.ExtensionContext): Record<string, unknown> {
+  const stored = context.globalState.get<Record<string, unknown>>(UI_PREFS_KEY);
+  // Защита от ручной правки storage'а (внезапно не объект).
+  if (stored && typeof stored === 'object' && !Array.isArray(stored)) return stored;
+  return {};
+}
+
+async function writeUiPref(
+  context: vscode.ExtensionContext,
+  key: string,
+  value: unknown
+): Promise<void> {
+  if (typeof key !== 'string' || key.length === 0) {
+    throw new Error('state.setUiPref: key обязателен');
+  }
+  const next = { ...readUiPrefs(context), [key]: value };
+  await context.globalState.update(UI_PREFS_KEY, next);
 }
 
 /**

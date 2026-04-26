@@ -1,7 +1,7 @@
 ---
 id: 0017
 title: Трёхпанельный shell с collapsible-сайдбарами и чистым списком ранов
-status: open
+status: done
 created: 2026-04-26
 ---
 
@@ -38,3 +38,45 @@ created: 2026-04-26
 - US-18.
 - Зависит от: #0015, #0016.
 - Блокирует: #0018 (форма создания), #0019 (sessions panel), #0023 (canvas как main-area вкладка).
+
+## Outcome
+
+- Корневой layout webview переехал в `src/webview/app/shell/AppShell.tsx`
+  (CSS Grid `auto 1fr auto`, ширины колонок через локальные константы
+  `COLUMN_EXPANDED`/`COLUMN_COLLAPSED`). Шапка приложения и
+  `OpenInTabButton` живут поверх сетки.
+- Появились три самостоятельных компонента панелей в `app/shell/`:
+  - `RunListPanel` — шапка с IconButton'ами «+ Новый ран» и «Свернуть»,
+    тело — текущий `RunList`. Composer создания рана из этой панели
+    убран; в свёрнутом состоянии видны иконки «Развернуть» и «+ Новый
+    ран» (32px полоса).
+  - `SessionsPanel` — заглушка `«Sessions panel — TBD #0019»`,
+    свёрнутая полоса с одной иконкой «Развернуть».
+  - `MainArea` — переключатель `'new-run' | 'run-details' | 'empty'`
+    на основе `mainAreaMode` и `selectedId`; режим `'new-run'` —
+    заглушка под #0018.
+- `RunCreateForm` остался как фича, но из shell'а не подключается —
+  будет переиспользован #0018'ым в main-area.
+- Старый layout `AgentPage` (двухколоночный с composer'ом в сайдбаре)
+  и весь слой `pages/agent/` удалён; `App.tsx` рендерит `AppShell`
+  напрямую. Tsconfig-алиас `@pages/*` тоже снят (eslint-boundaries
+  оставил правило для `webview-pages` как форвард-совместимое).
+- В webview store добавлены поля `leftPanelCollapsed`,
+  `rightPanelCollapsed`, `mainAreaMode` и действия `startNewRun`,
+  `setLeftPanelCollapsed`, `setRightPanelCollapsed`, `setUiPref`.
+  `selectRun` принудительно возвращает `mainAreaMode: 'run-details'`,
+  `runs.created` — тоже (после успеха формы создания main-area
+  возвращается в детали свежего рана).
+- Введён generic IPC-канал UI-префов: `state.setUiPref { key, value }`
+  и `state.getUiPrefs` → `state.uiPrefs.result { prefs }`. Extension
+  хранит мапу одним полем `aiFrontendAgent.uiPrefs` в `globalState`,
+  что упрощает дебаг через `Developer: Show Workspace Storage`. Канал
+  заведомо generic под #0024 (per-run last-viewed tab) и #0026
+  (canvas zoom).
+- Узкое окно (< 700px) при первом старте без сохранённых префов —
+  обе панели свёрнуты по умолчанию (`NARROW_WINDOW_PX`). Явный выбор
+  пользователя всегда перебивает порог и переживает перезапуск.
+- Добавлен TC-33 (markdown) с проверками: дефолтное раскрытое
+  состояние, «+ Новый ран» в шапке списка (а не в теле), persist
+  collapsed-состояния, поведение узкого окна, переключение в
+  `'new-run'` и обратно через выбор рана.
