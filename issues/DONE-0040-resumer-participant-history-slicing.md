@@ -1,7 +1,7 @@
 ---
 id: 0040
 title: Resumer — history slicing для участников по participant_joined
-status: open
+status: done
 created: 2026-04-26
 ---
 
@@ -30,3 +30,9 @@ created: 2026-04-26
 
 - Подзадача #0030.
 - Зависит от: #0036.
+
+## Outcome
+
+- `reconstructHistory` ([src/extension/shared/agent-loop/resume.ts](../src/extension/shared/agent-loop/resume.ts)) учитывает `config.role`: при наличии `participant_joined` для этой роли формирует `[system, user, pre-блок, system-маркер, ...post-события, intent-хвост]`, иначе работает как раньше.
+- Покрытие: новая unit-сюита `reconstructHistory — slicing по participant_joined (#0040)` в [resume.test.ts](../src/extension/shared/agent-loop/resume.test.ts), US-40 в [tests/user-stories.md](../tests/user-stories.md), ручной [TC-47](../tests/e2e/specs/tc-47-resumer-history-slicing.md). Lint + build + test:unit зелёные (201/201).
+- Реализация: коммит 15fe6e8.
