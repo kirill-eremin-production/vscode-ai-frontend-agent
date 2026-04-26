@@ -1,7 +1,7 @@
 ---
 id: 0025
 title: Canvas — анимированные стрелки общения между агентами
-status: open
+status: done
 created: 2026-04-26
 ---
 

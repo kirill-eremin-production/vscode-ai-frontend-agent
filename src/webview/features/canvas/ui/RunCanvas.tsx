@@ -12,6 +12,7 @@ import {
 import { formatRelativeTime } from '@shared/lib/time';
 import { layoutCanvas, type CanvasEdge, type CanvasLayout, type CanvasNode } from '../layout';
 import { ownerRoleOfActiveSession, selectActiveSessionForRole } from '../select-active-session';
+import { diffMetaForFlashes, type FlashKind } from '../flashes';
 
 /**
  * Канвас команды агентов (#0023, foundation).
@@ -44,11 +45,91 @@ function RunCanvasInner({ meta, tools }: RunCanvasProps) {
   // Один тикер на канвас (а не на каждый кубик) — перерасчёт «N мин назад».
   // 60 сек хватает: меньшая разрешающая способность чем у formatRelativeTime.
   const now = useNowTicker(60_000);
+  const flashes = useArrowFlashes(meta);
   return (
     <div className="run-canvas relative h-full w-full overflow-hidden bg-[var(--vscode-editor-background)]">
-      <CanvasViewport layout={layout} meta={meta} tools={tools} now={now} />
+      <CanvasViewport layout={layout} meta={meta} tools={tools} now={now} flashes={flashes} />
     </div>
   );
+}
+
+const FLASH_DURATIONS_MS: Record<FlashKind, number> = {
+  appear: 3000,
+  message: 1000,
+};
+const FLASH_DEBOUNCE_MS = 300;
+
+/**
+ * Подписка на «вспышки» рёбер канваса (#0025).
+ *
+ * Diff'им предыдущий и текущий `meta` чистой функцией `diffMetaForFlashes`
+ * и держим map `edgeId → flashKind` с автосбросом по таймеру. Все
+ * timestamps анимаций — в `setTimeout`, чтобы рендер кубиков и зум-уровень
+ * не зависели от тикера времени и оставались стабильными.
+ *
+ * Историческая «глухота»: первый вызов (prevRef.current === undefined)
+ * не порождает событий — иначе при первом монтировании канваса для
+ * давно идущего рана все стрелки бы разом «вспыхнули» как новые.
+ *
+ * Throttle: для одного и того же edgeId не запускаем повторную вспышку
+ * чаще, чем раз в 300мс — это снимает визуальный шум при каскадах
+ * (5 tool_calls подряд → одна вспышка).
+ */
+function useArrowFlashes(meta: RunMeta): Map<string, FlashKind> {
+  const [active, setActive] = useState<Map<string, FlashKind>>(() => new Map());
+  const prevRef = useRef<RunMeta | undefined>(undefined);
+  const lastAtRef = useRef<Map<string, number>>(new Map());
+  const timersRef = useRef<Map<string, ReturnType<typeof setTimeout>>>(new Map());
+
+  useEffect(() => {
+    const events = diffMetaForFlashes(prevRef.current, meta);
+    prevRef.current = meta;
+    if (events.length === 0) return;
+
+    const now = Date.now();
+    const startedThisTick: Array<{ edgeId: string; kind: FlashKind }> = [];
+    for (const event of events) {
+      const last = lastAtRef.current.get(event.edgeId) ?? 0;
+      if (now - last < FLASH_DEBOUNCE_MS) continue;
+      lastAtRef.current.set(event.edgeId, now);
+      startedThisTick.push(event);
+    }
+    if (startedThisTick.length === 0) return;
+
+    // eslint-disable-next-line react-hooks/set-state-in-effect
+    setActive((prev) => {
+      const next = new Map(prev);
+      for (const e of startedThisTick) next.set(e.edgeId, e.kind);
+      return next;
+    });
+
+    for (const event of startedThisTick) {
+      const existing = timersRef.current.get(event.edgeId);
+      if (existing) clearTimeout(existing);
+      const timer = setTimeout(() => {
+        timersRef.current.delete(event.edgeId);
+        setActive((prev) => {
+          if (!prev.has(event.edgeId)) return prev;
+          const next = new Map(prev);
+          next.delete(event.edgeId);
+          return next;
+        });
+      }, FLASH_DURATIONS_MS[event.kind]);
+      timersRef.current.set(event.edgeId, timer);
+    }
+  }, [meta]);
+
+  // Очистка таймеров при размонтировании, чтобы setActive не вызвался
+  // в уже отмонтированном компоненте.
+  useEffect(() => {
+    const timers = timersRef.current;
+    return () => {
+      for (const t of timers.values()) clearTimeout(t);
+      timers.clear();
+    };
+  }, []);
+
+  return active;
 }
 
 /**
@@ -77,6 +158,7 @@ function CanvasViewport(props: {
   meta: RunMeta;
   tools: ToolEvent[];
   now: Date;
+  flashes: Map<string, FlashKind>;
 }) {
   const { layout } = props;
   const containerRef = useRef<HTMLDivElement>(null);
@@ -203,6 +285,7 @@ function CanvasViewport(props: {
             edge={edge}
             from={layout.nodes.find((n) => n.role === edge.from)}
             to={layout.nodes.find((n) => n.role === edge.to)}
+            flash={props.flashes.get(edge.id)}
           />
         ))}
         {layout.nodes.map((node) => (
@@ -355,8 +438,9 @@ function CanvasEdgeView(props: {
   edge: CanvasEdge;
   from: CanvasNode | undefined;
   to: CanvasNode | undefined;
+  flash?: FlashKind;
 }) {
-  const { edge, from, to } = props;
+  const { edge, from, to, flash } = props;
   if (!from || !to) return null;
   const fx = from.x + from.width;
   const fy = from.y + from.height / 2;
@@ -366,13 +450,27 @@ function CanvasEdgeView(props: {
   const path = `M ${fx} ${fy} C ${fx + dx} ${fy}, ${tx - dx} ${ty}, ${tx} ${ty}`;
   const midX = (fx + tx) / 2;
   const midY = (fy + ty) / 2 - 6;
+  // Класс анимации зависит от flash kind. Сам path всегда отрисован —
+  // appear-анимация это «дорисовка»: dash-flow вдоль длины (см. CSS),
+  // которая поверх обычной линии создаёт ощущение «течения». Для
+  // reduced-motion CSS-fallback оставляет только короткое изменение цвета.
+  const flashClass = flash
+    ? clsx(
+        'run-canvas__edge',
+        flash === 'appear' && 'run-canvas__edge--appear',
+        flash === 'message' && 'run-canvas__edge--message'
+      )
+    : undefined;
   return (
     <g
       data-canvas-edge={`${edge.from}->${edge.to}`}
       data-canvas-edge-kind={edge.kind}
+      data-arrow-flashing={flash ? 'true' : undefined}
+      data-arrow-flash-kind={flash ?? undefined}
       onMouseDown={(e) => e.stopPropagation()}
     >
       <path
+        className={flashClass}
         d={path}
         fill="none"
         stroke="var(--vscode-foreground)"

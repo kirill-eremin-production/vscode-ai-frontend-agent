@@ -1,7 +1,7 @@
 ---
 id: 0024
 title: Canvas — живые статусы агентов (спиннеры, бейджи, ожидание)
-status: open
+status: done
 created: 2026-04-26
 ---
 
