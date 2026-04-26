@@ -1,7 +1,7 @@
 ---
 id: 0041
 title: Chat UI — отображение N участников и цвета bubble по роли
-status: open
+status: done
 created: 2026-04-26
 ---
 
@@ -27,3 +27,15 @@ created: 2026-04-26
 
 - Подзадача #0030.
 - Зависит от: #0034, #0036.
+
+## Outcome
+
+Реализовано в коммите ee06f0f. Шапка чата (`ParticipantsHeader`) рисует
+аватары `viewedSession.participants` и обновляется live через `runs.updated`;
+bubble'ы получают левый бордер цвета роли через токены `--color-role-*`
+(добавлен `programmer` → `--vscode-charts-orange`, иконка `Code`); событие
+`participant_joined` рендерится отдельным `ParticipantJoinedRow`. Маппинг
+ролей вынесен в `src/webview/features/chat/lib/roles.ts` (purely functional,
+покрыт unit-тестами). Storybook-сторис `MultiParticipantChat`, US-41,
+ручной TC-48. Ревью замечаний не нашло — lint/build/test:unit зелёные
+(214/214).
