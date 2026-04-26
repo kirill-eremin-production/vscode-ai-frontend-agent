@@ -4,8 +4,9 @@ import type { LoopConfig, ToolEvent } from '@ext/entities/run/storage';
 
 /**
  * Unit-тесты восстановления истории чата для resume после перезапуска
- * VS Code. Полностью детерминированно: на вход — `LoopConfig` + список
- * событий, на выход — `ChatMessage[]` строго определённой формы.
+ * VS Code или после нового сообщения пользователя в `awaiting_human`.
+ * Полностью детерминированно: на вход — `LoopConfig` + список событий +
+ * `ResumeIntent`, на выход — `ChatMessage[]` строго определённой формы.
  */
 
 const baseConfig: LoopConfig = {
@@ -16,9 +17,13 @@ const baseConfig: LoopConfig = {
   role: 'smoke',
 };
 
+/** Утилита: дефолтный `answer`-intent — упрощает тесты, где хвост не важен. */
+const answerIntent = (id = 'pending', text = 'answer') =>
+  ({ kind: 'answer', pendingToolCallId: id, userAnswer: text }) as const;
+
 describe('reconstructHistory', () => {
   it('кладёт system + user первыми двумя сообщениями', () => {
-    const history = reconstructHistory(baseConfig, [], 'pending', 'answer');
+    const history = reconstructHistory(baseConfig, [], answerIntent());
     expect(history[0]).toEqual({ role: 'system', content: 'SYSTEM' });
     expect(history[1]).toEqual({ role: 'user', content: 'USER' });
   });
@@ -32,7 +37,7 @@ describe('reconstructHistory', () => {
         tool_calls: [{ id: 'c1', name: 'ask_user', arguments: '{"question":"q"}' }],
       },
     ];
-    const history = reconstructHistory(baseConfig, events, 'c1', 'a');
+    const history = reconstructHistory(baseConfig, events, answerIntent('c1', 'a'));
     const assistant = history[2];
     expect(assistant).toEqual({
       role: 'assistant',
@@ -55,7 +60,7 @@ describe('reconstructHistory', () => {
         content: 'plain text',
       },
     ];
-    const history = reconstructHistory(baseConfig, events, 'pending', 'answer');
+    const history = reconstructHistory(baseConfig, events, answerIntent());
     expect(history[2]).toEqual({ role: 'assistant', content: 'plain text' });
     expect('tool_calls' in (history[2] as object)).toBe(false);
   });
@@ -70,7 +75,7 @@ describe('reconstructHistory', () => {
         result: { exists: true, content: 'hi' },
       },
     ];
-    const history = reconstructHistory(baseConfig, events, 'pending', 'answer');
+    const history = reconstructHistory(baseConfig, events, answerIntent());
     expect(history[2]).toEqual({
       role: 'tool',
       tool_call_id: 'c1',
@@ -88,7 +93,7 @@ describe('reconstructHistory', () => {
         error: 'sandbox violation',
       },
     ];
-    const history = reconstructHistory(baseConfig, events, 'pending', 'answer');
+    const history = reconstructHistory(baseConfig, events, answerIntent());
     expect(history[2]).toEqual({
       role: 'tool',
       tool_call_id: 'c1',
@@ -100,19 +105,28 @@ describe('reconstructHistory', () => {
     const events: ToolEvent[] = [
       { kind: 'system', at: '2026-04-26T10:00:00.000Z', message: 'restart' },
     ];
-    const history = reconstructHistory(baseConfig, events, 'pending', 'answer');
+    const history = reconstructHistory(baseConfig, events, answerIntent());
     // Только system + user + хвостовой tool-ответ пользователя.
     expect(history).toHaveLength(3);
   });
 
-  it('добавляет ответ пользователя как role:tool с привязкой к pendingToolCallId', () => {
-    const history = reconstructHistory(baseConfig, [], 'pending-id', 'мой ответ');
+  it('answer-intent добавляет ответ пользователя как role:tool с привязкой к pendingToolCallId', () => {
+    const history = reconstructHistory(baseConfig, [], answerIntent('pending-id', 'мой ответ'));
     const last = history[history.length - 1];
     expect(last).toEqual({
       role: 'tool',
       tool_call_id: 'pending-id',
       content: JSON.stringify({ result: { answer: 'мой ответ' } }),
     });
+  });
+
+  it('continue-intent добавляет новое сообщение пользователя как role:user', () => {
+    const history = reconstructHistory(baseConfig, [], {
+      kind: 'continue',
+      userMessage: 'доработай бриф',
+    });
+    const last = history[history.length - 1];
+    expect(last).toEqual({ role: 'user', content: 'доработай бриф' });
   });
 
   it('сохраняет порядок событий в истории', () => {
@@ -136,12 +150,30 @@ describe('reconstructHistory', () => {
         content: 'thinking',
       },
     ];
-    const history = reconstructHistory(baseConfig, events, 'pending', 'final');
+    const history = reconstructHistory(baseConfig, events, answerIntent('pending', 'final'));
     // system, user, assistant#1, tool#1, assistant#2, hint-tool — итого 6.
     expect(history).toHaveLength(6);
     expect(history[2].role).toBe('assistant');
     expect(history[3].role).toBe('tool');
     expect(history[4].role).toBe('assistant');
     expect(history[5].role).toBe('tool');
+  });
+
+  it('continue-intent после длинной истории просто дописывает user в самый конец', () => {
+    const events: ToolEvent[] = [
+      {
+        kind: 'assistant',
+        at: '2026-04-26T10:00:00.000Z',
+        content: 'финальный бриф',
+      },
+    ];
+    const history = reconstructHistory(baseConfig, events, {
+      kind: 'continue',
+      userMessage: 'добавь раздел про метрики',
+    });
+    // system, user, assistant(финал), user(новый ввод) — итого 4.
+    expect(history).toHaveLength(4);
+    expect(history[2]).toEqual({ role: 'assistant', content: 'финальный бриф' });
+    expect(history[3]).toEqual({ role: 'user', content: 'добавь раздел про метрики' });
   });
 });

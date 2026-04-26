@@ -1,12 +1,12 @@
 /**
  * Типы предметной области рана для webview.
  *
- * Намеренное дублирование с `src/extension/entities/run/types.ts`:
- * ESLint-границы запрещают импорт из extension в webview, и наоборот.
- * Это даёт уверенность, что общий код не утечёт в браузерный бандл.
- * Когда контракт устаканится, можно будет вынести типы в отдельный
- * не-связанный с runtime пакет, но сейчас стоимость дублирования
- * минимальна (один файл).
+ * Намеренное дублирование с `src/extension/entities/run/types.ts` и
+ * `src/extension/entities/run/storage.ts`: ESLint-границы запрещают
+ * импорт из extension в webview, и наоборот. Это даёт уверенность,
+ * что общий код не утечёт в браузерный бандл. Когда контракт устаканится,
+ * можно будет вынести типы в отдельный не-связанный с runtime пакет,
+ * но сейчас стоимость дублирования минимальна (один файл).
  */
 
 export type RunStatus =
@@ -43,3 +43,42 @@ export interface RunMeta {
   createdAt: string;
   updatedAt: string;
 }
+
+/**
+ * Зеркало `ToolEvent` из storage.ts. Это лента tool_calls/tool_results/
+ * системных диагностик, которую webview мерджит с `chat` по timestamp
+ * и рендерит в единой ленте рана (US-11).
+ *
+ * Дискриминированный union по `kind` — каждый вариант рендерится
+ * в карточке рана по-своему: assistant с tool_calls = «🛠 модель
+ * позвала тулы», tool_result = «↪ результат», system = «диагностика».
+ */
+export type ToolEvent =
+  | {
+      kind: 'assistant';
+      at: string;
+      /** Текст ответа модели (может быть null, если только tool_calls). */
+      content: string | null;
+      tool_calls?: Array<{
+        id: string;
+        name: string;
+        /** JSON-строка аргументов — храним как есть, рендер сам распарсит. */
+        arguments: string;
+      }>;
+    }
+  | {
+      kind: 'tool_result';
+      at: string;
+      tool_call_id: string;
+      tool_name: string;
+      /** Результат тула при успехе — произвольный JSON-сериализуемый объект. */
+      result?: unknown;
+      /** Сообщение об ошибке (валидация, sandbox, исключение в handler). */
+      error?: string;
+    }
+  | {
+      kind: 'system';
+      at: string;
+      /** Текст диагностики: лимит итераций, фатальная ошибка цикла, resume-маркер. */
+      message: string;
+    };

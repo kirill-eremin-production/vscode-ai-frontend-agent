@@ -1,6 +1,6 @@
 import { useEffect, useSyncExternalStore } from 'react';
 import { vscode } from '@shared/api/vscode';
-import type { ChatMessage, PendingAsk, RunMeta } from './types';
+import type { ChatMessage, PendingAsk, RunMeta, ToolEvent } from './types';
 
 /**
  * Простой in-memory store ранов для webview.
@@ -16,17 +16,18 @@ import type { ChatMessage, PendingAsk, RunMeta } from './types';
  * Содержимое состояния:
  *  - `runs` — список метаданных всех ранов (отрисовывает run-list);
  *  - `selectedId` — id текущего открытого рана;
- *  - `selectedDetails` — meta + chat выбранного, если уже подгружены;
+ *  - `selectedDetails` — meta + chat + tools выбранного, если уже подгружены;
  *  - `pendingAsk` — текущий вопрос от агента к пользователю по выбранному
  *    рану (если ран в `awaiting_user_input`);
  *  - `pendingByRun` — кэш «ран → актуальный pendingAsk» для подсветки
- *    в списке. Заполняется при `runs.askUser` broadcast'ах.
+ *    в списке. Заполняется при `runs.askUser` broadcast'ах;
+ *  - `selectedBrief` — содержимое `brief.md` выбранного, если есть.
  */
 
 interface RunsState {
   runs: RunMeta[];
   selectedId: string | undefined;
-  selectedDetails: { meta: RunMeta; chat: ChatMessage[] } | undefined;
+  selectedDetails: { meta: RunMeta; chat: ChatMessage[]; tools: ToolEvent[] } | undefined;
   pendingAsk: PendingAsk | undefined;
   pendingByRun: Record<string, PendingAsk>;
   /**
@@ -73,7 +74,7 @@ function getSnapshot(): RunsState {
 /** Атомарно обновить state и оповестить подписчиков. */
 function setState(updater: (prev: RunsState) => RunsState): void {
   state = updater(state);
-  listeners.forEach((l) => l());
+  listeners.forEach((listener) => listener());
 }
 
 /* ── Команды (отправка сообщений в extension host) ──────────────── */
@@ -87,10 +88,11 @@ type WebviewToExtensionMessage =
   | { type: 'runs.list' }
   | { type: 'runs.get'; id: string }
   | { type: 'runs.setApiKey' }
-  | { type: 'runs.userAnswer'; runId: string; askId: string; answer: string };
+  | { type: 'runs.user.message'; runId: string; text: string }
+  | { type: 'editor.open'; path: string };
 
-function send(msg: WebviewToExtensionMessage): void {
-  vscode.postMessage(msg);
+function send(message: WebviewToExtensionMessage): void {
+  vscode.postMessage(message);
 }
 
 /** Запросить актуальный список ранов у extension. */
@@ -127,13 +129,25 @@ export function selectRun(id: string): void {
 }
 
 /**
- * Отправить ответ пользователя на pending `ask_user`. Локально сразу
- * убираем `pendingAsk` из state — UI закрывает форму, не дожидаясь
- * подтверждения от extension. Если что-то пойдёт не так, `runs.askUser`
- * прилетит снова и форма вернётся.
+ * Отправить сообщение пользователя в чат рана.
+ *
+ * Унифицированный канал: extension сам решает по статусу, что это
+ * (см. wire.ts:handleUserMessage):
+ *  - `awaiting_user_input` → ответ на pending ask_user;
+ *  - `awaiting_human` / `failed` → продолжение диалога (US-10);
+ *  - `running` / `draft` → отбрасывается с runs.error.
+ *
+ * Локально для `awaiting_user_input` сразу убираем `pendingAsk` —
+ * UI закрывает форму вопроса, не дожидаясь подтверждения от extension.
+ * Если что-то пойдёт не так, `runs.askUser` прилетит снова и форма
+ * вернётся.
  */
-export function answerAsk(runId: string, askId: string, answer: string): void {
+export function sendUserMessage(runId: string, text: string): void {
   setState((prev) => {
+    // Если для этого рана висит pending ask_user — оптимистично снимаем его
+    // локально (UI закрывает баннер мгновенно). Для continue-режима
+    // (awaiting_human/failed) pendingAsk и так нет — ничего не меняется.
+    if (prev.pendingByRun[runId] === undefined) return prev;
     const nextByRun = { ...prev.pendingByRun };
     delete nextByRun[runId];
     return {
@@ -142,7 +156,16 @@ export function answerAsk(runId: string, askId: string, answer: string): void {
       pendingByRun: nextByRun,
     };
   });
-  send({ type: 'runs.userAnswer', runId, askId, answer });
+  send({ type: 'runs.user.message', runId, text });
+}
+
+/**
+ * Открыть файл из workspace в новой вкладке редактора. Путь — строго
+ * относительный от корня workspace (например, `.agents/knowledge/product/...`).
+ * Используется при клике по ссылкам в карточках tool_result-ов.
+ */
+export function openFile(path: string): void {
+  send({ type: 'editor.open', path });
 }
 
 /* ── Приём сообщений из extension ───────────────────────────────── */
@@ -160,6 +183,7 @@ type ExtensionToWebviewMessage =
       id: string;
       meta?: RunMeta;
       chat?: ChatMessage[];
+      tools?: ToolEvent[];
       pendingAsk?: PendingAsk;
       brief?: string;
     }
@@ -167,7 +191,8 @@ type ExtensionToWebviewMessage =
   | { type: 'runs.error'; message: string }
   | { type: 'runs.updated'; meta: RunMeta }
   | { type: 'runs.askUser'; runId: string; ask: PendingAsk }
-  | { type: 'runs.message.appended'; runId: string; message: ChatMessage };
+  | { type: 'runs.message.appended'; runId: string; message: ChatMessage }
+  | { type: 'runs.tool.appended'; runId: string; event: ToolEvent };
 
 /**
  * Хук-подписчик, который должен быть установлен ровно один раз на
@@ -198,9 +223,9 @@ export function useRunsWiring(): void {
           // но локальное обновление избавляет от мерцания UI.
           setState((prev) => ({
             ...prev,
-            runs: [data.meta, ...prev.runs.filter((r) => r.id !== data.meta.id)],
+            runs: [data.meta, ...prev.runs.filter((run) => run.id !== data.meta.id)],
             selectedId: data.meta.id,
-            selectedDetails: { meta: data.meta, chat: [] },
+            selectedDetails: { meta: data.meta, chat: [], tools: [] },
             pendingAsk: undefined,
           }));
           return;
@@ -220,7 +245,11 @@ export function useRunsWiring(): void {
             }
             return {
               ...prev,
-              selectedDetails: { meta: data.meta, chat: data.chat ?? [] },
+              selectedDetails: {
+                meta: data.meta,
+                chat: data.chat ?? [],
+                tools: data.tools ?? [],
+              },
               pendingAsk: data.pendingAsk,
               selectedBrief: data.brief,
             };
@@ -229,9 +258,9 @@ export function useRunsWiring(): void {
         }
         case 'runs.updated': {
           setState((prev) => {
-            const runs = prev.runs.map((r) => (r.id === data.meta.id ? data.meta : r));
+            const runs = prev.runs.map((run) => (run.id === data.meta.id ? data.meta : run));
             // Если меняется выбранный ран — обновляем и meta в деталях,
-            // chat не трогаем (он догонится отдельным сообщением).
+            // chat/tools не трогаем (они догонятся отдельными сообщениями).
             const selectedDetails =
               prev.selectedId === data.meta.id && prev.selectedDetails
                 ? { ...prev.selectedDetails, meta: data.meta }
@@ -275,6 +304,26 @@ export function useRunsWiring(): void {
               selectedDetails: {
                 ...prev.selectedDetails,
                 chat: [...prev.selectedDetails.chat, data.message],
+              },
+            };
+          });
+          return;
+        }
+        case 'runs.tool.appended': {
+          setState((prev) => {
+            // Аналогично message.appended — обновляем только открытый ран.
+            if (
+              prev.selectedId !== data.runId ||
+              !prev.selectedDetails ||
+              prev.selectedDetails.meta.id !== data.runId
+            ) {
+              return prev;
+            }
+            return {
+              ...prev,
+              selectedDetails: {
+                ...prev.selectedDetails,
+                tools: [...prev.selectedDetails.tools, data.event],
               },
             };
           });

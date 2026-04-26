@@ -1,5 +1,5 @@
 import type { ChatMessage, RunMeta } from '@ext/entities/run/types';
-import type { PendingAsk } from '@ext/entities/run/storage';
+import type { PendingAsk, ToolEvent } from '@ext/entities/run/storage';
 
 /**
  * Контракт сообщений между webview и extension host для работы с ранами.
@@ -39,15 +39,42 @@ export interface RunsSetApiKeyRequest {
 }
 
 /**
- * Ответ пользователя на pending `ask_user`. Webview шлёт это сообщение,
- * когда пользователь нажал «Ответить» в карточке рана. `askId` — это
- * `tool_call_id` из последнего assistant-сообщения цикла.
+ * Сообщение пользователя в чат рана. Единая точка входа: webview шлёт
+ * сюда и ответ на pending `ask_user`, и продолжение диалога после
+ * `awaiting_human`/`failed`.
+ *
+ * Маршрутизация — на стороне extension (см. wire.ts):
+ *  - `awaiting_user_input` → ответ на текущий ask_user (резолвим pending
+ *    in-memory; если процесс перезапускался — поднимаем resumer с
+ *    intent='answer').
+ *  - `awaiting_human` / `failed` → новая итерация цикла: пишем сообщение
+ *    в `chat.jsonl` и поднимаем resumer с intent='continue'.
+ *  - `running` / `draft` → отбрасываем (UI должен дизейблить кнопку,
+ *    но extension защищается на случай гонок).
+ *
+ * `askId` намеренно не передаём: он живёт только в `tools.jsonl`, и
+ * извлечение делает extension через `findPendingAsk`. Это убирает
+ * целый класс багов «UI прислал устаревший askId».
  */
-export interface RunsUserAnswerRequest {
-  type: 'runs.userAnswer';
+export interface RunsUserMessageRequest {
+  type: 'runs.user.message';
   runId: string;
-  askId: string;
-  answer: string;
+  text: string;
+}
+
+/**
+ * Открыть файл в редакторе VS Code новой вкладкой. Используется при
+ * клике по ссылке в карточке рана (например, на путь, созданный
+ * `kb.write`).
+ *
+ * Путь — относительный от workspace root. Extension резолвит абсолютный
+ * через `vscode.workspace.workspaceFolders[0].uri.fsPath`. Передавать
+ * абсолютные пути из webview сознательно не разрешаем — это лишняя
+ * поверхность атаки и источник кросс-платформенных багов (web ⇄ desktop).
+ */
+export interface EditorOpenRequest {
+  type: 'editor.open';
+  path: string;
 }
 
 export type WebviewToExtensionMessage =
@@ -55,7 +82,8 @@ export type WebviewToExtensionMessage =
   | RunsListRequest
   | RunsGetRequest
   | RunsSetApiKeyRequest
-  | RunsUserAnswerRequest;
+  | RunsUserMessageRequest
+  | EditorOpenRequest;
 
 /* ── Extension → Webview ─────────────────────────────────────────── */
 
@@ -71,6 +99,13 @@ export interface RunsGetResult {
   id: string;
   meta?: RunMeta;
   chat?: ChatMessage[];
+  /**
+   * Полный лог tool-событий рана из `tools.jsonl`. Webview мерджит его
+   * с `chat` по timestamp и рисует единую ленту: assistant/tool_calls/
+   * tool_results/system. Без этого пользователь не видит, что именно
+   * делал агент (см. US-11).
+   */
+  tools?: ToolEvent[];
   /**
    * Если ран висит в статусе `awaiting_user_input` — здесь приходит
    * описание вопроса, который надо отрисовать в карточке. Webview
@@ -115,7 +150,7 @@ export interface RunsUpdatedEvent {
 /**
  * Сообщение «появился новый pending-вопрос для пользователя». Шлётся,
  * когда модель в активном цикле вызвала `ask_user`. Webview подсвечивает
- * ран и, если он сейчас выбран, отрисовывает форму ответа.
+ * ран и, если он сейчас выбран, отрисовывает баннер с вопросом.
  *
  * Параллельно с этим extension меняет статус рана на `awaiting_user_input`
  * и шлёт `runs.updated` — UI показывает корректный статус.
@@ -136,6 +171,21 @@ export interface RunsMessageAppendedEvent {
   message: ChatMessage;
 }
 
+/**
+ * Дописали запись в `tools.jsonl` рана — webview добавляет её в ленту
+ * (мердж с chat по timestamp). Шлётся каждым шагом agent-loop'а:
+ * assistant-ответ, tool_result, system-диагностика.
+ *
+ * Поток отдельный от `runs.message.appended`, потому что tools.jsonl
+ * пишется чаще и содержит технические детали (имя тула, аргументы,
+ * результат), которые в chat.jsonl не дублируются.
+ */
+export interface RunsToolAppendedEvent {
+  type: 'runs.tool.appended';
+  runId: string;
+  event: ToolEvent;
+}
+
 export type ExtensionToWebviewMessage =
   | RunsListResult
   | RunsGetResult
@@ -143,4 +193,5 @@ export type ExtensionToWebviewMessage =
   | RunsErrorEvent
   | RunsUpdatedEvent
   | RunsAskUserEvent
-  | RunsMessageAppendedEvent;
+  | RunsMessageAppendedEvent
+  | RunsToolAppendedEvent;

@@ -1,10 +1,12 @@
+import * as path from 'node:path';
+import * as crypto from 'node:crypto';
 import * as vscode from 'vscode';
 import { createRun, getRunDetails, listRuns } from '@ext/entities/run/service';
-import { findPendingAsk, readBrief } from '@ext/entities/run/storage';
+import { appendChatMessage, findPendingAsk, readBrief, readMeta } from '@ext/entities/run/storage';
 import { resumeRun } from '@ext/entities/run/resume-registry';
 import { resolvePendingAsk } from '@ext/shared/agent-loop';
 import { promptForOpenRouterKey } from '@ext/shared/secrets/openrouter-key';
-import { onBroadcast } from './broadcast';
+import { broadcast, onBroadcast } from './broadcast';
 import type { ExtensionToWebviewMessage, WebviewToExtensionMessage } from './messages';
 
 /**
@@ -85,7 +87,9 @@ export function wireRunMessages(
         case 'runs.get': {
           const details = await getRunDetails(msg.id);
           // pendingAsk актуален только для ранов в awaiting_user_input.
-          // В других статусах не читаем tools.jsonl впустую.
+          // В других статусах не читаем tools.jsonl впустую (детали
+          // там есть в `details.tools`, но конкретный pending-вопрос —
+          // это отдельная семантика «над чем висит ран»).
           const pendingAsk =
             details?.meta.status === 'awaiting_user_input'
               ? await findPendingAsk(msg.id)
@@ -100,6 +104,7 @@ export function wireRunMessages(
             id: msg.id,
             meta: details?.meta,
             chat: details?.chat,
+            tools: details?.tools,
             pendingAsk,
             brief,
           });
@@ -109,21 +114,12 @@ export function wireRunMessages(
           await promptForOpenRouterKey(context);
           return;
         }
-        case 'runs.userAnswer': {
-          // Сначала пытаемся резолвить in-memory pending — это
-          // быстрый путь, когда extension host не перезапускался.
-          const resolved = resolvePendingAsk(msg.askId, msg.answer);
-          if (resolved) return;
-
-          // Иначе — pending не в памяти: либо был перезапуск VS Code,
-          // либо поздний дубликат ответа. Пытаемся возобновить из
-          // диска. resumeRun сам отчитается через broadcast.
-          await resumeRun({
-            context,
-            runId: msg.runId,
-            pendingToolCallId: msg.askId,
-            userAnswer: msg.answer,
-          });
+        case 'runs.user.message': {
+          await handleUserMessage(context, msg.runId, msg.text);
+          return;
+        }
+        case 'editor.open': {
+          await openWorkspaceFile(msg.path);
           return;
         }
         default: {
@@ -146,4 +142,122 @@ export function wireRunMessages(
       messageSub.dispose();
     },
   };
+}
+
+/**
+ * Обработать сообщение пользователя в чате рана. Маршрутизация
+ * полностью на нашей стороне:
+ *
+ *  - `awaiting_user_input` → ответ на pending `ask_user`. Сначала
+ *    пытаемся резолвить in-memory pending (быстрый путь, когда
+ *    extension host не перезапускался). Если не нашли — поднимаем
+ *    resumer с intent='answer'; он восстановит цикл с диска и
+ *    подложит ответ как `role: tool` в историю.
+ *
+ *  - `awaiting_human` / `failed` → продолжение диалога (US-10).
+ *    Дописываем сообщение в `chat.jsonl` (broadcast'ом, чтобы UI
+ *    сразу увидел), потом поднимаем resumer с intent='continue'.
+ *    Цикл получит новое сообщение как `role: user` поверх своей
+ *    истории и пойдёт дальше — обычно с обновлением `brief.md`.
+ *
+ *  - `running` / `draft` → отбрасываем. Технически дать сообщение в
+ *    `running` можно (поставить в очередь), но это сложный кейс
+ *    с гонками; пока UI просто дизейблит Send, а мы здесь страхуем
+ *    от рассинхрона UI/extension явным `runs.error`.
+ */
+async function handleUserMessage(
+  context: vscode.ExtensionContext,
+  runId: string,
+  text: string
+): Promise<void> {
+  const trimmed = text.trim();
+  if (trimmed.length === 0) {
+    throw new Error('Пустое сообщение — нечего отправлять');
+  }
+
+  const meta = await readMeta(runId);
+  if (!meta) {
+    throw new Error(`Ран ${runId} не найден`);
+  }
+
+  if (meta.status === 'awaiting_user_input') {
+    // Ищем pending ask_user, чтобы привязать ответ. findPendingAsk
+    // читает tools.jsonl — это устойчиво и к перезапуску VS Code,
+    // и к гонке «UI прислал устаревший askId» (askId мы вообще
+    // не получаем от UI, всегда берём актуальный с диска).
+    const pending = await findPendingAsk(runId);
+    if (!pending) {
+      throw new Error(
+        'Ран в awaiting_user_input, но pending-вопроса в tools.jsonl нет — состояние повреждено'
+      );
+    }
+    // Сначала быстрый путь: pending в памяти текущего процесса.
+    const resolved = resolvePendingAsk(pending.toolCallId, trimmed);
+    if (resolved) return;
+
+    // Иначе — pending не в памяти: либо был перезапуск VS Code,
+    // либо мы сейчас в свежей сессии extension host'а.
+    await resumeRun({
+      context,
+      runId,
+      intent: { kind: 'answer', pendingToolCallId: pending.toolCallId, userAnswer: trimmed },
+    });
+    return;
+  }
+
+  if (meta.status === 'awaiting_human' || meta.status === 'failed') {
+    // Дописываем в chat.jsonl и сразу broadcast'им, чтобы лента
+    // обновилась мгновенно — даже если resumer'у понадобится секунда
+    // на чтение loop.json/tools.jsonl, пользователь уже видит свой ввод.
+    const chatMessage = {
+      id: crypto.randomBytes(6).toString('hex'),
+      from: 'user',
+      at: new Date().toISOString(),
+      text: trimmed,
+    };
+    await appendChatMessage(runId, chatMessage);
+    broadcast({ type: 'runs.message.appended', runId, message: chatMessage });
+
+    await resumeRun({
+      context,
+      runId,
+      intent: { kind: 'continue', userMessage: trimmed },
+    });
+    return;
+  }
+
+  // running / draft: ничего не делаем, но даём UI понятный сигнал.
+  throw new Error(
+    `Нельзя отправить сообщение, пока ран в статусе "${meta.status}". Дождитесь завершения шага агента.`
+  );
+}
+
+/**
+ * Открыть файл из workspace в новой вкладке редактора. Путь — строго
+ * относительный от корня workspace; абсолютные пути отклоняем как
+ * лишнюю поверхность атаки и кросс-платформенный риск.
+ *
+ * Если файла нет — `vscode.open` сам покажет ошибку пользователю; мы
+ * не префлайтим существование, чтобы не плодить специфичных сообщений.
+ */
+async function openWorkspaceFile(relativePath: string): Promise<void> {
+  if (typeof relativePath !== 'string' || relativePath.length === 0) {
+    throw new Error('editor.open: путь обязателен');
+  }
+  if (path.isAbsolute(relativePath)) {
+    throw new Error('editor.open: ожидается относительный путь от корня workspace');
+  }
+  // Блокируем выход за пределы workspace через `..` — это не дыра,
+  // т.к. webview работает с теми же файлами, но соответствует
+  // принципу «откуда пришло, туда и можно».
+  if (relativePath.split(/[\\/]/).includes('..')) {
+    throw new Error('editor.open: путь не должен содержать ".."');
+  }
+
+  const folders = vscode.workspace.workspaceFolders;
+  if (!folders || folders.length === 0) {
+    throw new Error('editor.open: нет открытого workspace');
+  }
+  const absolute = path.join(folders[0].uri.fsPath, relativePath);
+  await vscode.commands.executeCommand('vscode.open', vscode.Uri.file(absolute));
 }

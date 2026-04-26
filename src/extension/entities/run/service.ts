@@ -1,7 +1,15 @@
 import * as vscode from 'vscode';
 import * as crypto from 'node:crypto';
 import { generateTitle } from './title';
-import { appendChatMessage, initRunDir, listAllMeta, readChat, readMeta } from './storage';
+import {
+  appendChatMessage,
+  initRunDir,
+  listAllMeta,
+  readChat,
+  readMeta,
+  readToolEvents,
+  type ToolEvent,
+} from './storage';
 import type { ChatMessage, RunMeta } from './types';
 import { getOpenRouterKey, promptForOpenRouterKey } from '@ext/shared/secrets/openrouter-key';
 import { runProduct } from '@ext/features/product-role';
@@ -125,15 +133,20 @@ export async function listRuns(): Promise<RunMeta[]> {
 }
 
 /**
- * Полные детали одного рана: meta + история чата.
+ * Полные детали одного рана: meta + история чата + лог tool-событий.
  * Возвращает undefined, если ран не найден (например, удалили папку
  * вручную) — UI должен это обработать как «выбранный ран исчез».
+ *
+ * `tools` нужен webview, чтобы строить единую ленту chat + tools по
+ * timestamp (US-11). Читаем безусловно: пустой `tools.jsonl` — это
+ * нормальное состояние свежего рана, `readToolEvents` сам вернёт `[]`.
  */
 export async function getRunDetails(
   runId: string
-): Promise<{ meta: RunMeta; chat: ChatMessage[] } | undefined> {
+): Promise<{ meta: RunMeta; chat: ChatMessage[]; tools: ToolEvent[] } | undefined> {
   const meta = await readMeta(runId);
   if (!meta) return undefined;
   const chat = await readChat(runId);
-  return { meta, chat };
+  const tools = await readToolEvents(runId);
+  return { meta, chat, tools };
 }

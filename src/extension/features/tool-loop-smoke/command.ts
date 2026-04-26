@@ -144,37 +144,41 @@ async function finalizeRun(
 /**
  * Зарегистрировать resumer для smoke-роли. Вызывается из `activate`,
  * один раз за сессию VS Code. Сам resumer вызывается, когда приходит
- * `runs.userAnswer` для рана, чей in-memory loop уже умер.
+ * `runs.user.message` для рана: либо ответ на pending `ask_user`, либо
+ * новое сообщение в `awaiting_human`/`failed` (continue, US-10).
  */
 export function registerToolLoopSmokeResumer(): void {
-  registerRoleResumer(
-    SMOKE_ROLE,
-    async ({ runId, apiKey, config, events, pendingToolCallId, userAnswer }) => {
-      // Восстановим историю и допишем системную диагностику в лог,
-      // чтобы при чтении `tools.jsonl` было понятно, где случился resume.
-      await logResume(runId, pendingToolCallId);
-      const initialHistory = reconstructHistory(config, events, pendingToolCallId, userAnswer);
+  registerRoleResumer(SMOKE_ROLE, async ({ runId, apiKey, config, events, intent }) => {
+    // Маркер в tools.jsonl — чтобы при разборе лога было видно
+    // точку и причину resume.
+    const marker =
+      intent.kind === 'answer'
+        ? `Resume after VS Code restart, answering tool_call ${intent.pendingToolCallId}`
+        : 'Resume by user follow-up message in chat';
+    await logResume(runId, marker);
 
-      const registry = buildSmokeRegistry();
-      // Вернём статус в running до первого запроса — UI увидит, что
-      // ран снова работает (был awaiting_user_input до этого момента).
-      const resumed = await updateRunStatus(runId, 'running');
-      if (resumed) broadcast({ type: 'runs.updated', meta: resumed });
+    const initialHistory = reconstructHistory(config, events, intent);
 
-      const result = await runAgentLoop({
-        runId,
-        apiKey,
-        model: config.model,
-        systemPrompt: config.systemPrompt,
-        userMessage: config.userMessage,
-        tools: registry,
-        temperature: config.temperature,
-        initialHistory,
-      });
+    const registry = buildSmokeRegistry();
+    // Вернём статус в running до первого запроса — UI увидит, что
+    // ран снова работает (был awaiting_user_input/awaiting_human/failed
+    // до этого момента).
+    const resumed = await updateRunStatus(runId, 'running');
+    if (resumed) broadcast({ type: 'runs.updated', meta: resumed });
 
-      await finalizeRun(runId, result);
-    }
-  );
+    const result = await runAgentLoop({
+      runId,
+      apiKey,
+      model: config.model,
+      systemPrompt: config.systemPrompt,
+      userMessage: config.userMessage,
+      tools: registry,
+      temperature: config.temperature,
+      initialHistory,
+    });
+
+    await finalizeRun(runId, result);
+  });
 }
 
 /**

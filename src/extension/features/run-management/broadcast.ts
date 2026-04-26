@@ -1,3 +1,4 @@
+import { appendToolEvent, type ToolEvent } from '@ext/entities/run/storage';
 import type { ExtensionToWebviewMessage } from './messages';
 
 /**
@@ -49,4 +50,19 @@ export function broadcast(message: ExtensionToWebviewMessage): void {
       // Один сбойный листенер не должен заблокировать остальные.
     }
   }
+}
+
+/**
+ * Записать tool-событие в `tools.jsonl` И сразу broadcast'нуть его
+ * во все webview. Объединено в одну функцию, потому что эти два
+ * действия должны идти строго парой: иначе UI рассинхронизируется
+ * с диском (увидит событие до того, как оно записано — и наоборот).
+ *
+ * Используется agent-loop'ом и tool-handler'ами вместо «голого»
+ * `appendToolEvent`. Storage остаётся чистым от знания о webview
+ * (его можно дёргать из тестов и CLI без broadcast-побочки).
+ */
+export async function recordToolEvent(runId: string, event: ToolEvent): Promise<void> {
+  await appendToolEvent(runId, event);
+  broadcast({ type: 'runs.tool.appended', runId, event });
 }

@@ -220,25 +220,67 @@ export class AgentDriver {
   }
 
   /**
-   * Дождаться появления формы ответа на ask_user внутри webview и
-   * убедиться, что в ней нужный вопрос.
+   * Дождаться появления баннера ask_user внутри webview и убедиться,
+   * что в нём нужный вопрос. Сам ввод ответа теперь идёт через общий
+   * composer (`sendUserMessage`), а баннер — visual-only элемент.
    */
   async waitForAskUserForm(question: string): Promise<void> {
     const ui = agentWebviewContent(this.window);
-    const form = ui.locator('.run-details__ask');
-    await form.waitFor({ state: 'visible', timeout: 30_000 });
+    const banner = ui.locator('.run-details__ask');
+    await banner.waitFor({ state: 'visible', timeout: 30_000 });
     await ui
       .locator('.run-details__ask-question', { hasText: question })
       .waitFor({ state: 'visible', timeout: 5_000 });
   }
 
   /**
-   * Заполнить textarea ответа и нажать «Ответить». Кнопка disabled
-   * при пустом draft, поэтому без fill click ничего не сделает.
+   * Ответить на текущий ask_user через общий composer.
+   *
+   * После #0007 поле ввода стало единым: один composer обслуживает и
+   * ответ на ask_user (в `awaiting_user_input`), и продолжение диалога
+   * (в `awaiting_human`/`failed`). Селекторы соответствующие — `composer`,
+   * не `ask`. Семантика метода сохранена для уже написанных TC-15..21.
    */
   async answerAsk(text: string): Promise<void> {
+    await this.sendUserMessage(text);
+  }
+
+  /**
+   * Отправить любое сообщение пользователя через composer. Используется
+   * и для ответа на вопрос, и для продолжения диалога после
+   * `awaiting_human` (US-10, TC-22).
+   */
+  async sendUserMessage(text: string): Promise<void> {
     const ui = agentWebviewContent(this.window);
-    await ui.locator('.run-details__ask-input').fill(text);
-    await ui.locator('.run-details__ask-submit').click();
+    const input = ui.locator('.run-details__composer-input');
+    await input.waitFor({ state: 'visible', timeout: 30_000 });
+    await input.fill(text);
+    await ui.locator('.run-details__composer-submit').click();
+  }
+
+  /**
+   * Кликнуть по ссылке на файл в карточке tool_result и дождаться,
+   * пока VS Code откроет соответствующую вкладку редактора. Используется
+   * в TC-23 (видимость созданных файлов в ленте, US-11).
+   */
+  async openFileFromToolEntry(relativePathFromKb: string): Promise<void> {
+    const ui = agentWebviewContent(this.window);
+    const link = ui.locator('.run-details__file-link', { hasText: relativePathFromKb });
+    await link.waitFor({ state: 'visible', timeout: 30_000 });
+    await link.click();
+  }
+
+  /**
+   * Дождаться появления tool-карточки с указанным именем тула в ленте.
+   * Лента мерджит chat.jsonl + tools.jsonl по timestamp, а карточки
+   * рендерятся по `runs.tool.appended`-broadcast'ам — это синхронизация
+   * с UI без обращения к диску.
+   */
+  async waitForToolEntry(toolName: string): Promise<void> {
+    const ui = agentWebviewContent(this.window);
+    await ui
+      .locator('.run-details__entry--tool', { hasText: toolName })
+      .first()
+      .waitFor({ state: 'visible', timeout: 30_000 });
   }
 }

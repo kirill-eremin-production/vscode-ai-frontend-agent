@@ -1,5 +1,5 @@
 import { chat, type ChatMessage, type ToolDefinitionWire } from '@ext/shared/openrouter/client';
-import { appendToolEvent } from '@ext/entities/run/storage';
+import { recordToolEvent } from '@ext/features/run-management/broadcast';
 import { validateToolArgs } from './validator';
 import type { ToolDefinition, ToolRegistry } from './types';
 
@@ -164,7 +164,7 @@ export async function runAgentLoop(params: AgentLoopParams): Promise<AgentLoopRe
       });
     } catch (err) {
       const reason = err instanceof Error ? err.message : 'unknown error';
-      await appendToolEvent(params.runId, {
+      await recordToolEvent(params.runId, {
         kind: 'system',
         at: new Date().toISOString(),
         message: `OpenRouter ошибка на итерации ${iteration}: ${reason}`,
@@ -176,7 +176,7 @@ export async function runAgentLoop(params: AgentLoopParams): Promise<AgentLoopRe
     history.push(assistant);
 
     // Лог: одна запись на каждый assistant-ответ, со всеми tool_calls.
-    await appendToolEvent(params.runId, {
+    await recordToolEvent(params.runId, {
       kind: 'assistant',
       at: new Date().toISOString(),
       content: assistant.content,
@@ -215,7 +215,7 @@ export async function runAgentLoop(params: AgentLoopParams): Promise<AgentLoopRe
           tool_call_id: call.id,
           content: JSON.stringify({ error: errorMsg }),
         });
-        await appendToolEvent(params.runId, {
+        await recordToolEvent(params.runId, {
           kind: 'tool_result',
           at: new Date().toISOString(),
           tool_call_id: call.id,
@@ -231,7 +231,7 @@ export async function runAgentLoop(params: AgentLoopParams): Promise<AgentLoopRe
         tool_call_id: call.id,
         content: exec.contentForModel,
       });
-      await appendToolEvent(params.runId, {
+      await recordToolEvent(params.runId, {
         kind: 'tool_result',
         at: new Date().toISOString(),
         tool_call_id: call.id,
@@ -245,7 +245,7 @@ export async function runAgentLoop(params: AgentLoopParams): Promise<AgentLoopRe
 
   // Сюда попадаем, если за `maxIterations` модель так и не дала финал.
   const reason = `Превышен лимит итераций (${maxIterations})`;
-  await appendToolEvent(params.runId, {
+  await recordToolEvent(params.runId, {
     kind: 'system',
     at: new Date().toISOString(),
     message: reason,

@@ -6,24 +6,34 @@ import {
   type LoopConfig,
   type ToolEvent,
 } from '@ext/entities/run/storage';
-import { loadResumeContext } from '@ext/shared/agent-loop';
+import { loadResumeContext, type ResumeIntent } from '@ext/shared/agent-loop';
 import { broadcast } from '@ext/features/run-management/broadcast';
 import { getOpenRouterKey } from '@ext/shared/secrets/openrouter-key';
 
 /**
  * Реестр resumer'ов ролей. Каждая роль (smoke, продакт, архитектор)
  * регистрирует функцию, которая умеет возобновить её цикл по `LoopConfig`
- * + истории `ToolEvent[]` + ответу пользователя на pending `ask_user`.
+ * + истории `ToolEvent[]` + одному из двух намерений пользователя:
+ *  - `answer` — ответ на pending `ask_user` (классический resume после
+ *    перезапуска VS Code или после нажатия «Ответить»);
+ *  - `continue` — новое сообщение пользователя в чат рана, продолжающее
+ *    диалог после `awaiting_human` или `failed` (US-10).
  *
  * Зачем не зашить смоук-resumer прямо в wire.ts: будущие роли тоже
  * будут возобновляться, и единая точка регистрации избавит от
  * if-else по `config.role`. Реестр модульный, как и pending-asks.
+ *
+ * Сам `ResumeIntent` живёт в `shared/agent-loop`, чтобы избежать
+ * циклической зависимости с `reconstructHistory`. Здесь его реэкспортируем,
+ * чтобы внешний код мог импортировать тип «по соседству» с регистрацией.
  */
+
+export type { ResumeIntent };
 
 /**
  * Сигнатура resumer'а. Принимает всё, что storage умеет восстановить,
- * + apiKey + runId. Должна сама собрать tool registry и вызвать
- * `runAgentLoop` с `initialHistory` от `reconstructHistory`.
+ * + apiKey + runId + intent. Должна сама собрать tool registry и
+ * вызвать `runAgentLoop` с `initialHistory` от `reconstructHistory`.
  *
  * Никаких возвратов — resumer работает в фоне, прогресс уходит в
  * webview через broadcast.
@@ -33,10 +43,7 @@ export type RoleResumer = (params: {
   apiKey: string;
   config: LoopConfig;
   events: ToolEvent[];
-  /** id pending tool_call ask_user, на который пришёл ответ. */
-  pendingToolCallId: string;
-  /** Ответ пользователя — текст из IPC `runs.userAnswer`. */
-  userAnswer: string;
+  intent: ResumeIntent;
 }) => Promise<void>;
 
 const resumers = new Map<string, RoleResumer>();
@@ -55,14 +62,13 @@ export function registerRoleResumer(role: string, resumer: RoleResumer): void {
  * false — если возобновление невозможно (не нашли config / events / role).
  *
  * При false помечаем ран `failed` и пишем сообщение в `chat.jsonl` —
- * иначе он навсегда останется в `awaiting_user_input` без шансов
- * на ответ.
+ * иначе он навсегда останется в `awaiting_user_input`/`awaiting_human`
+ * без шансов на ответ.
  */
 export async function resumeRun(params: {
   context: vscode.ExtensionContext;
   runId: string;
-  pendingToolCallId: string;
-  userAnswer: string;
+  intent: ResumeIntent;
 }): Promise<boolean> {
   const ctx = await loadResumeContext(params.runId);
   if (!ctx) {
@@ -93,8 +99,7 @@ export async function resumeRun(params: {
     apiKey,
     config: ctx.config,
     events: ctx.events,
-    pendingToolCallId: params.pendingToolCallId,
-    userAnswer: params.userAnswer,
+    intent: params.intent,
   }).catch(async (err) => {
     const reason = err instanceof Error ? err.message : String(err);
     await markUnresumable(params.runId, `resumer бросил исключение: ${reason}`);

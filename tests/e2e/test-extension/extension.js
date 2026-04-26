@@ -116,7 +116,7 @@ function installFakeFetch(scenarioPath) {
  * Точка активации расширения. VS Code вызывает её один раз при старте
  * (activationEvents: onStartupFinished).
  */
-function activate(_context) {
+function activate() {
   const scenarioPath = process.env[SCENARIO_ENV];
   if (!scenarioPath) {
     console.log('[e2e-helper] Сценарий не задан — fetch НЕ перехватывается');

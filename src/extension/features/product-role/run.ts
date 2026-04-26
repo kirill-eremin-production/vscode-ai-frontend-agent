@@ -179,45 +179,56 @@ export async function runProduct(params: {
 }
 
 /**
- * Зарегистрировать resumer продакта. Вызывается один раз в `activate`,
- * срабатывает при `runs.userAnswer` для рана, чей in-memory цикл уже
- * умер (перезапуск VS Code на `awaiting_user_input`).
+ * Зарегистрировать resumer продакта. Вызывается один раз в `activate`
+ * и срабатывает по двум сценариям (см. ResumeIntent):
+ *
+ *  - `answer` — пользователь ответил на pending `ask_user`, а
+ *    in-memory цикл уже умер (перезапуск VS Code на
+ *    `awaiting_user_input` либо новый extension host вообще).
+ *  - `continue` — пользователь дослал новое сообщение в
+ *    `awaiting_human`/`failed` (US-10), и продакт должен продолжить
+ *    работу: переоткрыть цикл с накопленной историей + новым user-message,
+ *    обычно перезаписать `brief.md`.
  *
  * Логика идентична `runProduct`, кроме старта: история восстанавливается
- * из `tools.jsonl` + `loop.json` + ответа пользователя через
+ * из `tools.jsonl` + `loop.json` + хвоста по intent через
  * `reconstructHistory`. Запись `loop.json` не повторяется (он уже на
  * диске с прошлой сессии).
  */
 export function registerProductResumer(): void {
-  registerRoleResumer(
-    PRODUCT_ROLE,
-    async ({ runId, apiKey, config, events, pendingToolCallId, userAnswer }) => {
-      await logResume(runId, pendingToolCallId);
-      const initialHistory = reconstructHistory(config, events, pendingToolCallId, userAnswer);
+  registerRoleResumer(PRODUCT_ROLE, async ({ runId, apiKey, config, events, intent }) => {
+    // Маркер в tools.jsonl — для людей, разбирающих лог. Видна точка,
+    // в которой произошёл resume и по какой причине.
+    const marker =
+      intent.kind === 'answer'
+        ? `Resume after VS Code restart, answering tool_call ${intent.pendingToolCallId}`
+        : 'Resume by user follow-up message in chat';
+    await logResume(runId, marker);
 
-      const resumed = await updateRunStatus(runId, 'running');
-      if (resumed) broadcast({ type: 'runs.updated', meta: resumed });
+    const initialHistory = reconstructHistory(config, events, intent);
 
-      let outcome: AgentLoopResult;
-      try {
-        outcome = await runAgentLoop({
-          runId,
-          apiKey,
-          model: config.model,
-          systemPrompt: config.systemPrompt,
-          userMessage: config.userMessage,
-          tools: buildProductRegistry(),
-          temperature: config.temperature,
-          initialHistory,
-        });
-      } catch (err) {
-        const reason = err instanceof Error ? err.message : String(err);
-        outcome = { kind: 'failed', reason, iterations: 0 };
-      }
+    const resumed = await updateRunStatus(runId, 'running');
+    if (resumed) broadcast({ type: 'runs.updated', meta: resumed });
 
-      await finalizeRun(runId, outcome);
+    let outcome: AgentLoopResult;
+    try {
+      outcome = await runAgentLoop({
+        runId,
+        apiKey,
+        model: config.model,
+        systemPrompt: config.systemPrompt,
+        userMessage: config.userMessage,
+        tools: buildProductRegistry(),
+        temperature: config.temperature,
+        initialHistory,
+      });
+    } catch (err) {
+      const reason = err instanceof Error ? err.message : String(err);
+      outcome = { kind: 'failed', reason, iterations: 0 };
     }
-  );
+
+    await finalizeRun(runId, outcome);
+  });
 }
 
 /**

@@ -8,7 +8,20 @@ import globals from 'globals';
 
 export default tseslint.config(
   {
-    ignores: ['out/**', 'node_modules/**', '*.vsix'],
+    // playwright-report/ и test-results/ — артефакты Playwright со
+    // встроенными HTML/JSON, ESLint их парсить не должен (на больших
+    // репортах упирается в память). out/ и node_modules/ — стандартные
+    // build/deps игноры.
+    ignores: [
+      'out/**',
+      'node_modules/**',
+      'playwright-report/**',
+      'test-results/**',
+      // .vscode-test/ — каталог скачанного VS Code для Playwright; внутри
+      // тысячи bundled JS встроенных extensions, ESLint туда лезть не должен.
+      '.vscode-test/**',
+      '*.vsix',
+    ],
   },
   js.configs.recommended,
   ...tseslint.configs.recommended,
@@ -23,6 +36,21 @@ export default tseslint.config(
     files: ['src/extension/**/*.ts'],
     languageOptions: {
       globals: { ...globals.node },
+    },
+  },
+  // tests/e2e/test-extension/ — отдельный CommonJS extension, который
+  // запускается вторым `--extensionDevelopmentPath` для перехвата
+  // OpenRouter-запросов в e2e. Это .js, не .ts, и он намеренно использует
+  // `require()` (его грузит сам VS Code как обычный node-модуль). Здесь
+  // даём ему `node` globals и разрешаем require, чтобы общий конфиг
+  // не подсвечивал родную CommonJS-семантику как ошибки.
+  {
+    files: ['tests/e2e/test-extension/**/*.js'],
+    languageOptions: {
+      globals: { ...globals.node },
+    },
+    rules: {
+      '@typescript-eslint/no-require-imports': 'off',
     },
   },
   {
