@@ -1,0 +1,197 @@
+import * as crypto from 'node:crypto';
+import { describe, expect, it } from 'vitest';
+import { buildTeamEscalateTool, ESCALATE_NOT_NEEDED_ERROR } from './escalate-tool';
+import {
+  initRunDir,
+  readChat,
+  readSessionMeta,
+  readToolEvents,
+  type ToolEvent,
+} from '@ext/entities/run/storage';
+import type { Participant, RunMeta } from '@ext/entities/run/types';
+
+/**
+ * Юнит-тесты тула `team.escalate` (#0038). Покрываем AC задачи:
+ *
+ *  1. programmer → escalate(product) — happy path: в комнате
+ *     оказываются programmer, architect и product (порядок неважен,
+ *     но все три обязаны быть). Сообщение записано один раз от
+ *     имени caller'а.
+ *  2. product → escalate(programmer) — escalate работает в обе
+ *     стороны: всё та же тройка участников.
+ *  3. programmer → escalate(architect) — отказ (соседний уровень,
+ *     нужен `team.invite`).
+ *  4. programmer → escalate(programmer) — отказ (сам себе
+ *     эскалировать бессмысленно).
+ *
+ * Тесты ходят в реальный fs через `__TEST_WORKSPACE__` и моков нет:
+ * это надёжнее, чем мокать `pullIntoRoom`/`appendChatMessage`, и
+ * заодно страхует от рассинхронизации тула с storage-API.
+ */
+
+const HANDLER_CONTEXT = { runId: '', toolCallId: 'test-call' };
+
+function freshRunId(): string {
+  return `run-${crypto.randomUUID()}`;
+}
+
+/** Базовая RunMeta без полей, которые проставит initRunDir. */
+function baseMeta(runId: string): Omit<RunMeta, 'activeSessionId' | 'sessions' | 'usage'> {
+  return {
+    id: runId,
+    title: 'escalate-test',
+    prompt: 'prompt',
+    status: 'draft',
+    createdAt: new Date().toISOString(),
+    updatedAt: new Date().toISOString(),
+  };
+}
+
+/**
+ * Создать ран с активной сессией, в которой уже есть `participants`.
+ * Стартовый состав отражает «комнату до escalate»: например, для
+ * сценария «программист зовёт продакта» — это `[user, programmer]`.
+ */
+async function initRoom(
+  participants: Participant[]
+): Promise<{ runId: string; sessionId: string }> {
+  const runId = freshRunId();
+  const meta = await initRunDir(baseMeta(runId), {
+    kind: 'agent-agent',
+    participants,
+  });
+  return { runId, sessionId: meta.activeSessionId };
+}
+
+describe('team.escalate — happy path: programmer → product', () => {
+  it('добавляет архитектора и продакта, пишет одно сообщение от программиста, возвращает цепочку', async () => {
+    // Стартовое состояние: программист в сессии с пользователем,
+    // архитектора и продакта в участниках нет. Программист хочет
+    // достучаться до продакта — обязан затащить и архитектора.
+    const { runId, sessionId } = await initRoom([
+      { kind: 'user' },
+      { kind: 'agent', role: 'programmer' },
+    ]);
+
+    const tool = buildTeamEscalateTool('programmer');
+    const result = (await tool.handler(
+      { targetRole: 'product', message: 'Нужно уточнить ТЗ — пригласил архитектора в свидетели' },
+      { ...HANDLER_CONTEXT, runId }
+    )) as { sessionId: string; participants: Participant[]; chain: string[] };
+
+    // sessionId — та же активная сессия (escalate не создаёт новую).
+    expect(result.sessionId).toBe(sessionId);
+
+    // participants содержит ВСЕ три роли (порядок не фиксируем по AC,
+    // но все три обязаны быть). Используем `expect.arrayContaining`,
+    // чтобы тест не падал из-за порядка пользователя в массиве.
+    const roles = result.participants
+      .filter(
+        (participant): participant is Extract<Participant, { kind: 'agent' }> =>
+          participant.kind === 'agent'
+      )
+      .map((participant) => participant.role);
+    expect(roles).toEqual(expect.arrayContaining(['programmer', 'architect', 'product']));
+    expect(roles).toHaveLength(3);
+
+    // Цепочка идёт от caller'а к target'у через посредников.
+    expect(result.chain).toEqual(['programmer', 'architect', 'product']);
+
+    // На диске participants действительно обновился (а не только в
+    // возврате) — страховка от случайного `return` без persist.
+    const session = await readSessionMeta(runId, sessionId);
+    expect(session?.participants).toEqual(result.participants);
+
+    // Системное событие `participant_joined` записано РОВНО ДВА раза
+    // (по одному на architect и product) и ни разу для caller'а
+    // (программист уже был в комнате).
+    const events = await readToolEvents(runId, sessionId);
+    const joined = events.filter(
+      (event): event is Extract<ToolEvent, { kind: 'participant_joined' }> =>
+        event.kind === 'participant_joined'
+    );
+    expect(joined.map((event) => event.role)).toEqual(['architect', 'product']);
+
+    // Сообщение в чате записано ровно один раз — после всех
+    // pullIntoRoom (см. AC «Сообщение пишется один раз, после всех
+    // pullIntoRoom»). Это инвариант: посредники видят message сразу
+    // в полной комнате, не до подтягивания target'а.
+    const chat = await readChat(runId, sessionId);
+    expect(chat).toHaveLength(1);
+    expect(chat[0].from).toBe('agent:programmer');
+    expect(chat[0].text).toBe('Нужно уточнить ТЗ — пригласил архитектора в свидетели');
+  });
+});
+
+describe('team.escalate — happy path: product → programmer (обратное направление)', () => {
+  it('escalate работает в обе стороны: продакт зовёт программиста через архитектора', async () => {
+    const { runId, sessionId } = await initRoom([
+      { kind: 'user' },
+      { kind: 'agent', role: 'product' },
+    ]);
+
+    const tool = buildTeamEscalateTool('product');
+    const result = (await tool.handler(
+      { targetRole: 'programmer', message: 'Хочу уточнить, как ты планируешь это сделать' },
+      { ...HANDLER_CONTEXT, runId }
+    )) as { sessionId: string; participants: Participant[]; chain: string[] };
+
+    // То же самое требование к участникам: programmer + architect +
+    // product (порядок неважен), как и в обратном направлении.
+    const roles = result.participants
+      .filter(
+        (participant): participant is Extract<Participant, { kind: 'agent' }> =>
+          participant.kind === 'agent'
+      )
+      .map((participant) => participant.role);
+    expect(roles).toEqual(expect.arrayContaining(['programmer', 'architect', 'product']));
+    expect(roles).toHaveLength(3);
+
+    // Цепочка отражает направление: от продакта вниз через архитектора.
+    expect(result.chain).toEqual(['product', 'architect', 'programmer']);
+
+    // События тоже отражают порядок добавления: сначала architect,
+    // потом programmer. Caller (product) уже в комнате, для него
+    // событие не пишется.
+    const events = await readToolEvents(runId, sessionId);
+    const joined = events.filter((event) => event.kind === 'participant_joined');
+    expect(joined.map((event) => (event as { role: string }).role)).toEqual([
+      'architect',
+      'programmer',
+    ]);
+  });
+});
+
+describe('team.escalate — отказ для соседних уровней', () => {
+  it('programmer → escalate(architect): соседний уровень → ошибка с подсказкой про invite', async () => {
+    const { runId } = await initRoom([{ kind: 'user' }, { kind: 'agent', role: 'programmer' }]);
+
+    const tool = buildTeamEscalateTool('programmer');
+    // Архитектор — сосед программиста, escalate избыточен. Текст
+    // ошибки буквально совпадает с константой тула — это сигнал
+    // модели, что есть правильный путь (`team.invite`).
+    await expect(
+      tool.handler(
+        { targetRole: 'architect', message: 'irrelevant' },
+        { ...HANDLER_CONTEXT, runId }
+      )
+    ).rejects.toThrow(ESCALATE_NOT_NEEDED_ERROR);
+  });
+});
+
+describe('team.escalate — отказ при caller === targetRole', () => {
+  it('programmer → escalate(programmer): сам себе эскалировать бессмысленно', async () => {
+    const { runId } = await initRoom([{ kind: 'user' }, { kind: 'agent', role: 'programmer' }]);
+
+    const tool = buildTeamEscalateTool('programmer');
+    // Эскалация на себя — частный случай «escalate не нужен».
+    // Проверяем явно: areAdjacent(a, a) === false (см. #0033), поэтому
+    // в тесте ловим именно ветку `caller === target`, а не «соседство».
+    await expect(
+      tool.handler(
+        { targetRole: 'programmer', message: 'sanity ping' },
+        { ...HANDLER_CONTEXT, runId }
+      )
+    ).rejects.toThrow(ESCALATE_NOT_NEEDED_ERROR);
+  });
+});

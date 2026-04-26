@@ -21,7 +21,7 @@ import { registerRoleResumer } from '@ext/entities/run/resume-registry';
 import { ARCHITECT_MODEL, ARCHITECT_ROLE } from '@ext/entities/run/roles/architect';
 import { buildArchitectSystemPrompt } from '@ext/entities/run/roles/architect.prompt';
 import { buildRoleScopedKbTools } from '@ext/features/product-role/role-kb-tools';
-import { buildTeamInviteTool } from '@ext/features/team';
+import { buildTeamEscalateTool, buildTeamInviteTool } from '@ext/features/team';
 import { runProgrammer } from '@ext/features/programmer-role';
 
 /**
@@ -59,12 +59,26 @@ function buildArchitectRegistry(): ToolRegistry {
   // programmer), поэтому самый «активный» пользователь тула.
   const inviteTool = buildTeamInviteTool(ARCHITECT_ROLE);
   registry.set(inviteTool.name, inviteTool as ToolDefinition);
+  // team.escalate (#0038): для архитектора эскалация почти не имеет
+  // смысла (нет ролей через уровень — он сам в середине), но регистрируем
+  // тул всё равно: единый набор тимовых тулов у каждой роли + сам тул
+  // защитит от ненужного вызова текстом ошибки про team.invite.
+  const escalateTool = buildTeamEscalateTool(ARCHITECT_ROLE);
+  registry.set(escalateTool.name, escalateTool as ToolDefinition);
   return registry;
 }
 
 /** Имена тулов для `loop.json` — для совместимости с общим форматом. */
 function architectToolNames(): string[] {
-  return ['kb.read', 'kb.write', 'kb.list', 'kb.grep', askUserTool.name, 'team.invite'];
+  return [
+    'kb.read',
+    'kb.write',
+    'kb.list',
+    'kb.grep',
+    askUserTool.name,
+    'team.invite',
+    'team.escalate',
+  ];
 }
 
 /** Сообщение в чат от имени архитектора. */

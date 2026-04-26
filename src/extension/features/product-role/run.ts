@@ -22,7 +22,7 @@ import { PRODUCT_MODEL, PRODUCT_ROLE } from '@ext/entities/run/roles/product';
 import { buildProductSystemPrompt } from '@ext/entities/run/roles/product.prompt';
 import { ARCHITECT_ROLE } from '@ext/entities/run/roles/architect';
 import { runArchitect } from '@ext/features/architect-role';
-import { buildTeamInviteTool } from '@ext/features/team';
+import { buildTeamEscalateTool, buildTeamInviteTool } from '@ext/features/team';
 import { buildRoleScopedKbTools } from './role-kb-tools';
 
 /**
@@ -57,6 +57,10 @@ function buildProductRegistry(): ToolRegistry {
   // притвориться другой ролью через аргументы.
   const inviteTool = buildTeamInviteTool(PRODUCT_ROLE);
   registry.set(inviteTool.name, inviteTool as ToolDefinition);
+  // team.escalate (#0038): продакту через уровень — программист.
+  // Тул сам докинет архитектора как промежуточную роль.
+  const escalateTool = buildTeamEscalateTool(PRODUCT_ROLE);
+  registry.set(escalateTool.name, escalateTool as ToolDefinition);
   return registry;
 }
 
@@ -66,7 +70,15 @@ function productToolNames(): string[] {
   // что у role-scoped версий. resumer пересоберёт реестр через
   // `buildProductRegistry`, не сверяясь с этим списком (он там для
   // диагностики/совместимости с общим форматом loop.json).
-  return ['kb.read', 'kb.write', 'kb.list', 'kb.grep', askUserTool.name, 'team.invite'];
+  return [
+    'kb.read',
+    'kb.write',
+    'kb.list',
+    'kb.grep',
+    askUserTool.name,
+    'team.invite',
+    'team.escalate',
+  ];
 }
 
 /**
