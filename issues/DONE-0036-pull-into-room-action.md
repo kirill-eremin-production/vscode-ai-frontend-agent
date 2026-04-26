@@ -1,7 +1,7 @@
 ---
 id: 0036
 title: pullIntoRoom + системное событие participant_joined
-status: open
+status: done
 created: 2026-04-26
 ---
 
@@ -33,3 +33,17 @@ created: 2026-04-26
 - Подзадача #0030.
 - Зависит от: #0034.
 - Блокирует: #0037, #0038, #0051.
+
+## Outcome
+
+Реализовано: action `pullIntoRoom(runId, sessionId, role)` в
+[storage.ts](../src/extension/entities/run/storage.ts) — идемпотентно
+добавляет агентскую роль в `participants` и пишет в `tools.jsonl`
+системное событие `{kind: 'participant_joined', at, role}`. Тип
+добавлен в дискриминированный union `ToolEvent` (extension и webview).
+В `buildTimeline` ([RunDetails.tsx](../src/webview/app/shell/RunDetails.tsx))
+запись скрыта до отдельного рендера в #0046. Возвращает обновлённую
+`RunMeta`: вызывающий код (#0037/#0038) сам сделает broadcast
+`runs.updated` — следуем существующему паттерну `addParticipant` →
+`broadcast` в `wire.ts`. Покрытие: unit-сюита `pullIntoRoom (#0036)`
+(3 кейса), US-36, TC-43. Коммит реализации: 8ad8210.
