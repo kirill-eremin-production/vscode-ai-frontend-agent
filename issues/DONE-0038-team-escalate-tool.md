@@ -1,7 +1,7 @@
 ---
 id: 0038
 title: Тул team.escalate — приглашение через уровни иерархии
-status: open
+status: done
 created: 2026-04-26
 ---
 
@@ -36,3 +36,21 @@ created: 2026-04-26
 - Подзадача #0032.
 - Зависит от: #0033, #0036.
 - Блокирует: #0039 (промпты ролей).
+
+## Outcome
+
+- Реализовано: `buildTeamEscalateTool(caller)` —
+  [src/extension/features/team/escalate-tool.ts](../src/extension/features/team/escalate-tool.ts).
+  Цепочка `[caller, ...rolesBetween, target]` строится один раз;
+  посредники тащатся через `pullIntoRoom` (#0036), сообщение пишется
+  один раз после всех `pullIntoRoom`. Отказ для соседей/self —
+  через константу `ESCALATE_NOT_NEEDED_ERROR`.
+- Регистрация в реестрах продакта/архитектора/программиста —
+  [product-role/run.ts](../src/extension/features/product-role/run.ts),
+  [architect-role/run.ts](../src/extension/features/architect-role/run.ts),
+  [programmer-role/run.ts](../src/extension/features/programmer-role/run.ts).
+- Покрытие: 4 unit-сюиты в
+  [escalate-tool.test.ts](../src/extension/features/team/escalate-tool.test.ts),
+  US-38 в [tests/user-stories.md](../tests/user-stories.md), ручной
+  TC-45 в [tests/e2e/specs/tc-45-team-escalate.md](../tests/e2e/specs/tc-45-team-escalate.md).
+- Коммиты: 3047f5e (impl) + done.
