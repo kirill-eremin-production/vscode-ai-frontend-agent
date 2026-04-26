@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { layoutCanvas } from './layout';
+import { layoutCanvas, NODE_W, PAD_X, ROW_STEP_Y } from './layout';
 import type { RunMeta, SessionSummary, UsageAggregate } from '@shared/runs/types';
 
 const ZERO_USAGE: UsageAggregate = {
@@ -36,178 +36,178 @@ function meta(sessions: SessionSummary[], over: Partial<RunMeta> = {}): RunMeta 
   };
 }
 
-describe('layoutCanvas', () => {
-  it('один агент (user-agent сессия) → одна нода продакта, без user-кубика', () => {
-    // User в user-agent сессии — собеседник по умолчанию, отдельный
-    // кубик не нужен. Канвас рисует именно команду агентов; пользователь
-    // появляется отдельным кубиком только при hybrid-вмешательстве в bridge.
+describe('layoutCanvas — hierarchy-layout (#0042)', () => {
+  it('три роли (product, architect, programmer) → три позиции на разных y, одинаковом x', () => {
+    // AC #0042: «для трёх ролей возвращает три позиции на разных y,
+    // одинаковом x». Порядок по y — строго по `levelOf` (product
+    // выше programmer'а вне зависимости от порядка появления в meta).
     const result = layoutCanvas(
       meta([
         session({
           id: 's1',
-          participants: [{ kind: 'user' }, { kind: 'agent', role: 'product' }],
-        }),
-      ])
-    );
-    expect(result.nodes).toHaveLength(1);
-    expect(result.nodes[0].role).toBe('product');
-    expect(result.nodes[0].col).toBe(0);
-    expect(result.edges).toHaveLength(0);
-  });
-
-  it('продакт→архитектор: две ноды в разных колонках, одно ребро с подписью «бриф»', () => {
-    const result = layoutCanvas(
-      meta(
-        [
-          session({
-            id: 's1',
-            kind: 'user-agent',
-            participants: [{ kind: 'agent', role: 'product' }],
-          }),
-          session({
-            id: 's2',
-            kind: 'agent-agent',
-            parentSessionId: 's1',
-            participants: [
-              { kind: 'agent', role: 'product' },
-              { kind: 'agent', role: 'architect' },
-            ],
-          }),
-        ],
-        { briefPath: '.agents/knowledge/product/briefs/r1.md' }
-      )
-    );
-    const product = result.nodes.find((n) => n.role === 'product')!;
-    const architect = result.nodes.find((n) => n.role === 'architect')!;
-    expect(product.col).toBeLessThan(architect.col);
-    expect(result.edges).toHaveLength(1);
-    expect(result.edges[0]).toMatchObject({
-      from: 'product',
-      to: 'architect',
-      label: 'бриф',
-      kind: 'handoff',
-    });
-  });
-
-  it('hybrid: продакт→архитектор + user-вмешательство → 3 ноды и 2 ребра', () => {
-    const result = layoutCanvas(
-      meta([
-        session({
-          id: 's1',
-          kind: 'user-agent',
-          participants: [{ kind: 'user' }, { kind: 'agent', role: 'product' }],
+          participants: [{ kind: 'agent', role: 'programmer' }],
         }),
         session({
           id: 's2',
-          kind: 'agent-agent',
-          parentSessionId: 's1',
-          participants: [
-            { kind: 'user' },
-            { kind: 'agent', role: 'product' },
-            { kind: 'agent', role: 'architect' },
-          ],
-        }),
-      ])
-    );
-    const roles = result.nodes.map((n) => n.role).sort();
-    expect(roles).toEqual(['architect', 'product', 'user']);
-    const edgeKinds = result.edges.map((e) => `${e.kind}:${e.from}->${e.to}`).sort();
-    expect(edgeKinds).toEqual(['handoff:product->architect', 'user:user->architect']);
-  });
-
-  it('пустой meta.sessions → fallback одна нода продакта', () => {
-    const result = layoutCanvas(meta([]));
-    expect(result.nodes).toHaveLength(1);
-    expect(result.nodes[0].role).toBe('product');
-  });
-
-  it('сессия без participants → fallback одна нода продакта', () => {
-    const result = layoutCanvas(meta([session({ id: 's1' })]));
-    expect(result.nodes).toHaveLength(1);
-    expect(result.nodes[0].role).toBe('product');
-  });
-
-  it('handoff-ребро несёт bridgeSessionId; повторный handoff заменяет на свежий', () => {
-    // Drill-in #0026: клик по стрелке открывает чат той сессии, что в
-    // bridgeSessionId. Если на одну пару (product→architect) случилось
-    // два bridge'а подряд (повторный handoff после возврата), берём
-    // последнюю — это «активная нитка» этой связи.
-    const result = layoutCanvas(
-      meta([
-        session({
-          id: 's1',
-          kind: 'user-agent',
           participants: [{ kind: 'agent', role: 'product' }],
-        }),
-        session({
-          id: 's2',
-          kind: 'agent-agent',
-          parentSessionId: 's1',
-          participants: [
-            { kind: 'agent', role: 'product' },
-            { kind: 'agent', role: 'architect' },
-          ],
         }),
         session({
           id: 's3',
-          kind: 'agent-agent',
-          parentSessionId: 's1',
-          updatedAt: '2026-04-26T11:00:00Z',
-          participants: [
-            { kind: 'agent', role: 'product' },
-            { kind: 'agent', role: 'architect' },
-          ],
+          participants: [{ kind: 'agent', role: 'architect' }],
         }),
       ])
     );
-    const handoff = result.edges.find((e) => e.id === 'product->architect');
-    expect(handoff?.bridgeSessionId).toBe('s3');
+    expect(result.nodes).toHaveLength(3);
+    const [first, second, third] = result.nodes;
+    expect(first.role).toBe('product');
+    expect(second.role).toBe('architect');
+    expect(third.role).toBe('programmer');
+
+    // Все x одинаковые — кубики выровнены по центру по горизонтали.
+    expect(second.x).toBe(first.x);
+    expect(third.x).toBe(first.x);
+
+    // y растёт строго по уровням, шаг ROW_STEP_Y.
+    expect(second.y).toBe(first.y + ROW_STEP_Y);
+    expect(third.y).toBe(second.y + ROW_STEP_Y);
+
+    // Каждому кубику — свой `level`, совпадающий с уровнем в иерархии.
+    expect(first.level).toBe(0);
+    expect(second.level).toBe(1);
+    expect(third.level).toBe(2);
   });
 
-  it('user-edge несёт bridgeSessionId соответствующего hybrid-bridge', () => {
+  it('две роли → корректно сжимает: два кубика подряд по y, одна линия между ними', () => {
+    // AC #0042: «для двух — корректно сжимает». Сжатие = идут подряд
+    // по списку, без пустого слота для отсутствующего уровня.
     const result = layoutCanvas(
       meta([
         session({
           id: 's1',
-          kind: 'user-agent',
-          participants: [{ kind: 'user' }, { kind: 'agent', role: 'product' }],
-        }),
-        session({
-          id: 's2',
-          kind: 'agent-agent',
-          parentSessionId: 's1',
-          participants: [
-            { kind: 'user' },
-            { kind: 'agent', role: 'product' },
-            { kind: 'agent', role: 'architect' },
-          ],
-        }),
-      ])
-    );
-    const userEdge = result.edges.find((e) => e.id === 'user->architect');
-    expect(userEdge?.bridgeSessionId).toBe('s2');
-  });
-
-  it('width/height учитывают все колонки и ряды', () => {
-    const result = layoutCanvas(
-      meta([
-        session({
-          id: 's1',
-          kind: 'user-agent',
           participants: [{ kind: 'agent', role: 'product' }],
         }),
         session({
           id: 's2',
-          kind: 'agent-agent',
-          parentSessionId: 's1',
-          participants: [
-            { kind: 'agent', role: 'product' },
-            { kind: 'agent', role: 'architect' },
-          ],
+          participants: [{ kind: 'agent', role: 'programmer' }],
         }),
       ])
     );
-    expect(result.width).toBeGreaterThan(0);
-    expect(result.height).toBeGreaterThan(0);
+    expect(result.nodes).toHaveLength(2);
+    const [upper, lower] = result.nodes;
+    expect(upper.role).toBe('product');
+    expect(lower.role).toBe('programmer');
+    // Сжатие: y идут подряд, как если бы между ними не было пропуска.
+    expect(lower.y).toBe(upper.y + ROW_STEP_Y);
+    // Линия одна — между двумя присутствующими уровнями.
+    expect(result.reportingLines).toHaveLength(1);
+    expect(result.reportingLines[0]).toMatchObject({
+      id: 'product--programmer',
+      x: upper.x + NODE_W / 2,
+      fromY: upper.y + upper.height,
+      toY: lower.y,
+    });
+  });
+
+  it('layout не содержит edges-полей (стрелки коммуникации удалены)', () => {
+    const result = layoutCanvas(
+      meta([
+        session({
+          id: 's1',
+          participants: [{ kind: 'agent', role: 'product' }],
+        }),
+      ])
+    );
+    expect(result).not.toHaveProperty('edges');
+    // Только статичные линии-репортинги допустимы как «связи».
+    expect(Array.isArray(result.reportingLines)).toBe(true);
+  });
+
+  it('пустой meta.sessions → fallback одна нода продакта без линий', () => {
+    const result = layoutCanvas(meta([]));
+    expect(result.nodes).toHaveLength(1);
+    expect(result.nodes[0].role).toBe('product');
+    expect(result.reportingLines).toHaveLength(0);
+  });
+
+  it('user-участник в сессии не порождает кубик (кубик user — задача #0043)', () => {
+    const result = layoutCanvas(
+      meta([
+        session({
+          id: 's1',
+          participants: [{ kind: 'user' }, { kind: 'agent', role: 'product' }],
+        }),
+      ])
+    );
+    expect(result.nodes.map((node) => node.role)).toEqual(['product']);
+  });
+
+  it('lastActivityAt берётся максимальным по сессиям роли', () => {
+    const result = layoutCanvas(
+      meta([
+        session({
+          id: 's1',
+          updatedAt: '2026-04-26T10:00:00Z',
+          participants: [{ kind: 'agent', role: 'product' }],
+        }),
+        session({
+          id: 's2',
+          updatedAt: '2026-04-26T11:00:00Z',
+          participants: [{ kind: 'agent', role: 'product' }],
+        }),
+      ])
+    );
+    expect(result.nodes[0].lastActivityAt).toBe('2026-04-26T11:00:00Z');
+  });
+
+  it('width/height положительны и учитывают число уровней', () => {
+    const single = layoutCanvas(
+      meta([
+        session({
+          id: 's1',
+          participants: [{ kind: 'agent', role: 'product' }],
+        }),
+      ])
+    );
+    const triple = layoutCanvas(
+      meta([
+        session({
+          id: 's1',
+          participants: [{ kind: 'agent', role: 'product' }],
+        }),
+        session({
+          id: 's2',
+          participants: [{ kind: 'agent', role: 'architect' }],
+        }),
+        session({
+          id: 's3',
+          participants: [{ kind: 'agent', role: 'programmer' }],
+        }),
+      ])
+    );
+    expect(single.width).toBeGreaterThanOrEqual(NODE_W + PAD_X * 2);
+    expect(single.height).toBeGreaterThan(0);
+    expect(triple.height).toBeGreaterThan(single.height);
+  });
+
+  it('линии-репортинги для трёх ролей: две линии, между соседними уровнями', () => {
+    const result = layoutCanvas(
+      meta([
+        session({
+          id: 's1',
+          participants: [{ kind: 'agent', role: 'product' }],
+        }),
+        session({
+          id: 's2',
+          participants: [{ kind: 'agent', role: 'architect' }],
+        }),
+        session({
+          id: 's3',
+          participants: [{ kind: 'agent', role: 'programmer' }],
+        }),
+      ])
+    );
+    expect(result.reportingLines).toHaveLength(2);
+    expect(result.reportingLines[0].id).toBe('product--architect');
+    expect(result.reportingLines[1].id).toBe('architect--programmer');
   });
 });

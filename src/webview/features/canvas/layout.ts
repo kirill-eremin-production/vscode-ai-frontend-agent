@@ -1,273 +1,173 @@
 import type { Participant, RunMeta, SessionSummary } from '@shared/runs/types';
 import type { Role } from '@shared/ui';
+import { HIERARCHY, isHierarchyRole, levelOf, type HierarchyRole } from './hierarchy';
 
 /**
- * Чистая функция layout'а канваса команды агентов (#0023).
+ * Hierarchy-layout канваса команды агентов (#0042).
  *
- * Вход — `RunMeta.sessions` со списком участников. Выход — список нод
- * (по одной на роль) и рёбер (handoff'ы между ролями + опциональная
- * связь user→agent для hybrid-сессий).
+ * Заменяет прежний flow-layout (#0023): canvas из графа становится
+ * org-chart'ом. Кубики ролей расположены строго по уровням иерархии
+ * (`HIERARCHY`), один кубик на роль, центр по горизонтали, шаг по
+ * вертикали. Все edge-данные (стрелки коммуникации, bridge-привязки)
+ * удалены из layout-модели — реальная история работы живёт в журнале
+ * встреч (#0029, US-29), а на canvas остаются только статичные тонкие
+ * линии-«репортинги» между уровнями (org-chart-стиль).
  *
- * Layered layout: корни — в первом столбце, каждое ребро смещает
- * приёмник на колонку вправо. Внутри колонки — вертикально по порядку
- * первого появления роли. Координаты считаются константами `COL_STEP_X`
- * × `ROW_STEP_Y`. Никакой force-directed-магии: у нас 2–4 кубика.
- *
- * Все идентификаторы ролей — `Role` (`product` | `architect` | `system` |
- * `user`). Неизвестные строки нормализуются в `system`, чтобы канвас не
- * падал, если придёт новая роль до обновления типов.
+ * Линии-репортинги вычисляются один раз по присутствующим уровням и
+ * не зависят от polling'а meta'ы — это соответствует требованию AC
+ * «рисуются один раз на маунт, не на каждый poll-tick». Технически
+ * `layoutCanvas` чистая функция и пересчитывается на смену `meta`, но
+ * массив `reportingLines` пересоздаётся только при изменении набора
+ * ролей; React-уровень рендерит их без анимаций и без подписки на
+ * сессии/сообщения.
  */
 
-export const COL_STEP_X = 240;
+/** Шаг между уровнями по вертикали. Подобран под высоту кубика + воздух. */
 export const ROW_STEP_Y = 140;
-export const NODE_W = 180;
+export const NODE_W = 200;
 export const NODE_H = 96;
 export const PAD_X = 32;
 export const PAD_Y = 32;
+/**
+ * Базовая ширина «полотна» — достаточно для одного кубика по центру.
+ * Реальная ширина viewBox мажорно определяется CanvasViewport через
+ * ResizeObserver; layout даёт минимально-разумный размер на случай,
+ * если контейнер ещё не измерен (первый рендер).
+ */
+const BASE_WIDTH = NODE_W + PAD_X * 2;
 
 export interface CanvasNode {
   id: Role;
-  role: Role;
+  role: HierarchyRole;
   /** Левый-верхний угол кубика в viewBox-координатах. */
   x: number;
   y: number;
   width: number;
   height: number;
-  /** Колонка/ряд layout'а — для отладки и тестов. */
-  col: number;
-  row: number;
+  /**
+   * Уровень роли в `HIERARCHY` (`product` = 0, `architect` = 1,
+   * `programmer` = 2). Используется и тестами layout'а, и UI-слоем
+   * для отрисовки линий-репортингов между соседними уровнями.
+   */
+  level: number;
   /** Время последней активности любой сессии этой роли (ISO). */
   lastActivityAt?: string;
 }
 
-export interface CanvasEdge {
+/**
+ * Статичная линия-«репортинг» между двумя соседними уровнями
+ * иерархии (org-chart-стиль). Без стрелок, без подписей, без анимаций.
+ */
+export interface CanvasReportingLine {
   id: string;
-  from: Role;
-  to: Role;
-  /** Подпись над ребром: «бриф», «план», «вмешательство». */
-  label: string;
-  /** Источник handoff'а: 'agent' = handoff между агентами, 'user' = вмешательство. */
-  kind: 'handoff' | 'user';
-  /**
-   * Bridge-сессия, которую представляет ребро (#0026). Для drill-in:
-   * клик по стрелке открывает чат именно этой сессии. Если рёбер с
-   * одинаковой парой (from→to) несколько (повторные handoff'ы) — берём
-   * последнюю (самую свежую): она обычно и есть «активная нитка» этой
-   * связи. Поле опциональное только из-за обратной совместимости в типах,
-   * на практике handoff/user-edge всегда привязаны к bridge.
-   */
-  bridgeSessionId?: string;
+  /** y-координата верхней точки линии (нижний край верхнего кубика). */
+  fromY: number;
+  /** y-координата нижней точки линии (верхний край нижнего кубика). */
+  toY: number;
+  /** x-координата (общая, кубики выровнены по центру). */
+  x: number;
 }
 
 export interface CanvasLayout {
   nodes: CanvasNode[];
-  edges: CanvasEdge[];
+  /**
+   * Линии-репортинги между уровнями. Длина = `nodes.length - 1` для
+   * соседних кубиков (если уровней меньше — соответственно меньше).
+   * Для одного кубика — пустой массив.
+   */
+  reportingLines: CanvasReportingLine[];
   /** Размер всего полотна — для дефолтного viewBox. */
   width: number;
   height: number;
 }
 
-/** Поддерживаемые роли агентов; всё прочее → `system`. */
-const KNOWN_ROLES = new Set<Role>(['product', 'architect', 'system', 'user']);
-
-function normalizeRole(raw: string): Role {
-  return KNOWN_ROLES.has(raw as Role) ? (raw as Role) : 'system';
-}
-
 function rolesOf(session: SessionSummary): Role[] {
   if (!session.participants || session.participants.length === 0) return [];
-  return session.participants.map((p: Participant) =>
-    p.kind === 'user' ? 'user' : normalizeRole(p.role)
+  return session.participants.map((participant: Participant) =>
+    participant.kind === 'user' ? 'user' : (participant.role as Role)
   );
-}
-
-function agentRolesOf(session: SessionSummary): Role[] {
-  return rolesOf(session).filter((r) => r !== 'user');
-}
-
-function hasUserParticipant(session: SessionSummary): boolean {
-  return rolesOf(session).includes('user');
 }
 
 /**
- * Маппинг роли-источника handoff'а на тип артефакта передачи. Кратко
- * и по-русски, чтобы поместилось над стрелкой. Если артефакт неизвестен
- * — пустая строка (стрелка без подписи).
+ * Собирает уникальные роли иерархии, реально присутствующие в `meta`.
+ * Если ни одной роли нет (пустой `sessions`, или только user-участник) —
+ * возвращает fallback `['product']`: пустой canvas без кубиков выглядит
+ * как сломанный, а продакт всегда первый агент в любом ране.
+ *
+ * `Set` не используем намеренно: ролей мало (3 на сегодня), важен
+ * детерминированный порядок по `levelOf`, а не порядок появления.
  */
-function handoffArtifactLabel(fromRole: Role, meta: RunMeta): string {
-  if (fromRole === 'product' && meta.briefPath) return 'бриф';
-  if (fromRole === 'architect' && meta.planPath) return 'план';
-  if (fromRole === 'product') return 'бриф';
-  if (fromRole === 'architect') return 'план';
-  return '';
+function collectPresentRoles(meta: RunMeta): HierarchyRole[] {
+  const present = new Set<HierarchyRole>();
+  for (const session of meta.sessions ?? []) {
+    for (const role of rolesOf(session)) {
+      if (isHierarchyRole(role)) present.add(role);
+    }
+  }
+  if (present.size === 0) present.add('product');
+  return [...present].sort((a, b) => levelOf(a) - levelOf(b));
 }
 
-export function layoutCanvas(meta: RunMeta): CanvasLayout {
-  const sessions = meta.sessions ?? [];
-
-  // 1) Найти владельца каждой сессии (роль агента, для которой эта
-  //    сессия — собственная). Для user-agent — единственный агент-участник.
-  //    Для agent-agent (bridge) — приёмник handoff'а: роль из participants
-  //    bridge'а, которой НЕ было в родительской сессии.
-  const sessionById = new Map<string, SessionSummary>();
-  for (const session of sessions) sessionById.set(session.id, session);
-
-  const sessionOwner = new Map<string, Role>();
-  for (const session of sessions) {
-    const agents = agentRolesOf(session);
-    if (agents.length === 0) continue;
-    if (session.kind === 'user-agent' || !session.parentSessionId) {
-      sessionOwner.set(session.id, agents[0]);
-      continue;
-    }
-    const parent = sessionById.get(session.parentSessionId);
-    const parentRoles = parent ? new Set(agentRolesOf(parent)) : new Set<Role>();
-    const recipient = agents.find((r) => !parentRoles.has(r)) ?? agents[agents.length - 1];
-    sessionOwner.set(session.id, recipient);
-  }
-
-  // 2) Уникальные агенты в порядке первого появления + последняя активность.
-  //    user добавляется отдельной нодой, если он есть хотя бы в одной сессии.
-  const agentOrder: Role[] = [];
-  const lastActivity = new Map<Role, string>();
-  for (const session of sessions) {
-    const owner = sessionOwner.get(session.id);
-    if (owner && !agentOrder.includes(owner)) agentOrder.push(owner);
-    if (owner) {
-      const prev = lastActivity.get(owner);
-      if (!prev || prev < session.updatedAt) lastActivity.set(owner, session.updatedAt);
-    }
-  }
-  const fallbackRole: Role | undefined = agentOrder.length === 0 ? 'product' : undefined;
-  if (fallbackRole) agentOrder.push(fallbackRole);
-
-  // User появляется отдельным кубиком только в hybrid-режиме: когда
-  // пользователь вмешался в bridge (agent-agent сессию). В обычной
-  // user-agent сессии user — собеседник по умолчанию и подразумевается.
-  const hasUser = sessions.some((s) => s.kind === 'agent-agent' && hasUserParticipant(s));
-
-  // 3) Рёбра: handoff'ы (parent → bridge) и user-вмешательство.
-  // Накапливаем edge'ы в map по id; при повторе той же пары (повторный
-  // handoff на ту же роль) заменяем bridgeSessionId на более свежий —
-  // drill-in открывает «последнюю нитку» этой связи (acceptance #0026).
-  const edgesById = new Map<string, CanvasEdge>();
-  const addEdge = (edge: CanvasEdge) => {
-    edgesById.set(edge.id, edge);
-  };
-
-  for (const session of sessions) {
-    if (session.kind !== 'agent-agent' || !session.parentSessionId) continue;
-    const recipient = sessionOwner.get(session.id);
-    if (!recipient) continue;
-    const sourceRole = sessionOwner.get(session.parentSessionId);
-    if (sourceRole && sourceRole !== recipient) {
-      addEdge({
-        id: `${sourceRole}->${recipient}`,
-        from: sourceRole,
-        to: recipient,
-        label: handoffArtifactLabel(sourceRole, meta),
-        kind: 'handoff',
-        bridgeSessionId: session.id,
-      });
-    }
-    if (hasUserParticipant(session)) {
-      addEdge({
-        id: `user->${recipient}`,
-        from: 'user',
-        to: recipient,
-        label: 'вмешательство',
-        kind: 'user',
-        bridgeSessionId: session.id,
-      });
-    }
-  }
-  const edges: CanvasEdge[] = [...edgesById.values()];
-
-  // 4) Колонки: BFS от корней (агентов без входящих handoff-рёбер).
-  const incoming = new Map<Role, Role[]>();
-  for (const role of agentOrder) incoming.set(role, []);
-  for (const edge of edges) {
-    if (edge.kind !== 'handoff') continue;
-    if (!incoming.has(edge.to)) incoming.set(edge.to, []);
-    incoming.get(edge.to)!.push(edge.from);
-  }
-
-  const col = new Map<Role, number>();
-  const queue: Role[] = [];
-  for (const role of agentOrder) {
-    if ((incoming.get(role) ?? []).length === 0) {
-      col.set(role, 0);
-      queue.push(role);
-    }
-  }
-  // Если все ноды имеют входящие (циклы быть не должно, но на всякий случай) —
-  // первая по порядку становится корнем.
-  if (queue.length === 0 && agentOrder.length > 0) {
-    col.set(agentOrder[0], 0);
-    queue.push(agentOrder[0]);
-  }
-  while (queue.length > 0) {
-    const role = queue.shift()!;
-    const c = col.get(role) ?? 0;
-    for (const edge of edges) {
-      if (edge.kind !== 'handoff' || edge.from !== role) continue;
-      const prev = col.get(edge.to);
-      const next = c + 1;
-      if (prev === undefined || prev < next) {
-        col.set(edge.to, next);
-        queue.push(edge.to);
+/**
+ * Считает `lastActivityAt` для каждой роли — берётся максимальный
+ * `updatedAt` по всем сессиям, где роль присутствует как агент.
+ * Используется кубиком для подписи «N мин назад» (UX из #0024).
+ */
+function computeLastActivity(meta: RunMeta): Map<HierarchyRole, string> {
+  const lastActivity = new Map<HierarchyRole, string>();
+  for (const session of meta.sessions ?? []) {
+    for (const role of rolesOf(session)) {
+      if (!isHierarchyRole(role)) continue;
+      const previous = lastActivity.get(role);
+      if (!previous || previous < session.updatedAt) {
+        lastActivity.set(role, session.updatedAt);
       }
     }
   }
-
-  // 5) Ряды внутри столбца — по порядку первого появления.
-  const rowByCol = new Map<number, number>();
-  const nodes: CanvasNode[] = [];
-  for (const role of agentOrder) {
-    const c = col.get(role) ?? 0;
-    const r = rowByCol.get(c) ?? 0;
-    rowByCol.set(c, r + 1);
-    nodes.push({
-      id: role,
-      role,
-      col: c,
-      row: r,
-      x: PAD_X + c * COL_STEP_X,
-      y: PAD_Y + r * ROW_STEP_Y,
-      width: NODE_W,
-      height: NODE_H,
-      lastActivityAt: lastActivity.get(role),
-    });
-  }
-
-  // 6) User — отдельная колонка слева (col = -1), если присутствует.
-  if (hasUser) {
-    nodes.push({
-      id: 'user',
-      role: 'user',
-      col: -1,
-      row: 0,
-      x: PAD_X,
-      y: PAD_Y,
-      width: NODE_W,
-      height: NODE_H,
-      lastActivityAt: undefined,
-    });
-    // Сдвинуть всех агентов на колонку правее — иначе перекрытие с user.
-    for (const node of nodes) {
-      if (node.role === 'user') continue;
-      node.col += 1;
-      node.x = PAD_X + node.col * COL_STEP_X;
-    }
-  }
-
-  const maxCol = nodes.reduce((m, n) => Math.max(m, n.col), 0);
-  const maxRow = nodes.reduce(
-    (m, n) => Math.max(m, n.col === maxCol ? n.row : (rowByCol.get(n.col) ?? 1) - 1),
-    0
-  );
-  const width = PAD_X * 2 + (maxCol + 1) * COL_STEP_X;
-  const height = PAD_Y * 2 + (maxRow + 1) * ROW_STEP_Y;
-
-  return { nodes, edges, width, height };
+  return lastActivity;
 }
+
+export function layoutCanvas(meta: RunMeta): CanvasLayout {
+  const presentRoles = collectPresentRoles(meta);
+  const lastActivity = computeLastActivity(meta);
+
+  // Центр по горизонтали: x одинаковый для всех кубиков.
+  const centerX = PAD_X;
+  const nodes: CanvasNode[] = presentRoles.map((role, index) => ({
+    id: role,
+    role,
+    level: levelOf(role),
+    x: centerX,
+    y: PAD_Y + index * ROW_STEP_Y,
+    width: NODE_W,
+    height: NODE_H,
+    lastActivityAt: lastActivity.get(role),
+  }));
+
+  // Линии-репортинги: между i и i+1 кубиками. AC говорит «между
+  // уровнями» — мы соединяем соседей по отображаемому списку, а не по
+  // абсолютному уровню. Это и есть ожидаемое «сжатие» в тесте на 2 роли:
+  // если присутствуют только product (0) и programmer (2), они идут
+  // подряд по y и линия между ними одна.
+  const reportingLines: CanvasReportingLine[] = [];
+  for (let i = 0; i < nodes.length - 1; i++) {
+    const upper = nodes[i];
+    const lower = nodes[i + 1];
+    reportingLines.push({
+      id: `${upper.role}--${lower.role}`,
+      fromY: upper.y + upper.height,
+      toY: lower.y,
+      x: upper.x + upper.width / 2,
+    });
+  }
+
+  const width = Math.max(BASE_WIDTH, NODE_W + PAD_X * 2);
+  const height = PAD_Y * 2 + nodes.length * ROW_STEP_Y;
+  return { nodes, reportingLines, width, height };
+}
+
+/**
+ * Реэкспорт `HIERARCHY` для тестов и потребителей вне `layout.ts`,
+ * чтобы не плодить импорт из соседнего файла там, где уже есть layout.
+ */
+export { HIERARCHY };

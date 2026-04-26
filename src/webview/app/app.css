@@ -70,60 +70,7 @@
 }
 
 /*
- * ── Canvas edge flashes (#0025) ──────────────────────────────────────
- * Анимации стрелок общения между агентами. Никаких js-тикеров: всё —
- * CSS keyframes с фиксированной длительностью; React выставляет/снимает
- * класс через ref-таймер в `useArrowFlashes`.
- *
- *   .run-canvas__edge--appear  — handoff/первое появление user-стрелки:
- *       3-секундный «течёт пунктир» по длине + лёгкая подсветка цвета
- *       роли. Имитирует «информация ушла из источника к приёмнику».
- *   .run-canvas__edge--message — короткая (~1с) подсветка stroke'а:
- *       новое сообщение в bridge.
- *
- * `prefers-reduced-motion: reduce` отключает движение dash'ей и оставляет
- * только короткое изменение прозрачности — пользователю с этой настройкой
- * нужен сигнал «что-то произошло», но без вестибулярной нагрузки.
+ * Canvas edge flashes (#0025) удалены вместе с edge-моделью в #0042 —
+ * canvas стал org-chart'ом без анимированных стрелок коммуникации.
+ * Если в будущем вернём «живые» индикаторы — восстановим keyframes здесь.
  */
-@keyframes run-canvas-dash-flow {
-  from {
-    stroke-dashoffset: 24;
-  }
-  to {
-    stroke-dashoffset: 0;
-  }
-}
-
-@keyframes run-canvas-edge-pulse {
-  0%,
-  100% {
-    stroke-opacity: 0.65;
-    stroke-width: 1.5;
-  }
-  50% {
-    stroke-opacity: 1;
-    stroke-width: 2.5;
-  }
-}
-
-.run-canvas__edge--appear {
-  stroke: var(--vscode-charts-blue);
-  stroke-dasharray: 6 6;
-  animation:
-    run-canvas-dash-flow 0.6s linear infinite,
-    run-canvas-edge-pulse 1s ease-in-out 3;
-}
-
-.run-canvas__edge--message {
-  stroke: var(--vscode-charts-blue);
-  animation: run-canvas-edge-pulse 0.5s ease-in-out 2;
-}
-
-@media (prefers-reduced-motion: reduce) {
-  .run-canvas__edge--appear,
-  .run-canvas__edge--message {
-    animation: none;
-    transition: stroke-opacity 0.5s ease-in-out;
-    stroke-opacity: 1;
-  }
-}
