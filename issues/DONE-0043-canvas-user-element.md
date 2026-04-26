@@ -1,7 +1,7 @@
 ---
 id: 0043
 title: Canvas — User как отдельный визуальный элемент сверху иерархии
-status: open
+status: done
 created: 2026-04-26
 ---
 
@@ -27,3 +27,18 @@ User — заказчик, не участник иерархии агентов
 
 - Подзадача #0028.
 - Зависит от: #0035 (нужен `inputFrom`), #0042.
+
+## Outcome
+
+Реализовано в df2828c. На canvas над верхним кубиком рисуется
+круглый User-элемент (lucide `User`, диаметр 48 vs NODE_H=96), к
+продакту идёт тонкая статичная линия того же стиля, что и
+межуровневые. Drill-in по клику/Enter ведёт в корневую сессию
+(`inputFrom='user'`, пустой `prev`); резолвер —
+`resolveUserDrillSession` в [drill-resolver.ts](../src/webview/features/canvas/drill-resolver.ts);
+layout — [layout.ts](../src/webview/features/canvas/layout.ts);
+рендер — `CanvasUserView` в [RunCanvas.tsx](../src/webview/features/canvas/ui/RunCanvas.tsx).
+Если корневой нет — `data-canvas-drill-session` пуст и клик —
+no-op. Покрыто unit-тестами (`drill-resolver.test.ts`,
+`layout.test.ts`), US-43 и ручным TC-50. Ревью замечаний не
+выявило.
