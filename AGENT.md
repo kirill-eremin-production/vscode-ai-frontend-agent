@@ -1,6 +1,7 @@
 # Agent notes
 
 - Node.js версия зафиксирована в [.nvmrc](.nvmrc). Префиксуй npm-команды `nvm use &&`, чтобы не ловить `EBADENGINE`.
+- Если работаешь в автономном прогоне (`scripts/run-tasks.sh`) — обязательно прочитай [AUTONOMOUS-WORKFLOW.md](AUTONOMOUS-WORKFLOW.md) и следуй ему буквально (фазы implement/review, обязательные unit + US + e2e TC, никаких вопросов пользователю, коммит после каждой фазы, переименование в `DONE-` только в фазе review).
 
 ## Комментарии в коде
 
