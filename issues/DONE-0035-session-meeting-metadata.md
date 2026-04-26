@@ -1,7 +1,7 @@
 ---
 id: 0035
 title: Метаданные встречи на сессии — inputFrom, prev[], next[]
-status: open
+status: done
 created: 2026-04-26
 ---
 
@@ -35,3 +35,9 @@ created: 2026-04-26
 - Подзадача #0029.
 - Зависит от: #0034.
 - Блокирует: #0046 (UI журнала встреч).
+
+## Outcome
+
+- `SessionMeta`/`SessionSummary` расширены полями `inputFrom`, `prev[]`, `next[]`; `parentSessionId` оставлен как алиас на `prev[0]` для обратной совместимости (см. [src/extension/entities/run/types.ts](src/extension/entities/run/types.ts), [src/webview/shared/runs/types.ts](src/webview/shared/runs/types.ts)).
+- `createSession` принимает `prev` явно и одним write+persist обновляет `next` родителя (и в его session-meta, и в run-meta); read-time нормализация в `readMeta` пересчитывает `next` обратным индексом и уточняет `inputFrom` по `participants[0]` родителя — legacy-раны мигрируют без правки диска (см. [src/extension/entities/run/storage.ts](src/extension/entities/run/storage.ts)).
+- Реализация прошла ревью без замечаний: AC покрыты unit-тестами (линейная цепочка, ветвление, legacy-нормализация — [src/extension/entities/run/storage.test.ts](src/extension/entities/run/storage.test.ts)), US-35 и TC-42 синхронно обновлены, `lint`/`build`/`test:unit` зелёные. Коммит реализации — `faf1908`.
