@@ -1,7 +1,7 @@
 ---
 id: 0045
 title: E2E — дроп TC-39, новые TC на drill через кубики иерархии
-status: open
+status: done
 created: 2026-04-26
 ---
 
@@ -29,3 +29,11 @@ created: 2026-04-26
 
 - Подзадача #0028.
 - Зависит от: #0042, #0043.
+
+## Outcome
+
+- TC-39 переписан под кубики иерархии: drill по architect cube + User-элементу через focus+Enter, селектор `data-canvas-drill-session`, проверка lastViewedSession (#0026). Edge-кейсы сняты вместе с edge'ями (#0042) — см. [tests/e2e/specs/tc-39-canvas-drill-in.spec.ts](../tests/e2e/specs/tc-39-canvas-drill-in.spec.ts).
+- Кейс «working programmer cube → текущая bridge architect↔programmer» оформлен ручным TC-52 ([tests/e2e/specs/tc-52-canvas-programmer-cube-drill.md](../tests/e2e/specs/tc-52-canvas-programmer-cube-drill.md)) — программистский цикл в e2e пока без автоматизации.
+- Контракт «несколько owned-сессий архитектора → drill в свежайшую» закрыт unit-тестом в [src/webview/features/canvas/drill-resolver.test.ts](../src/webview/features/canvas/drill-resolver.test.ts).
+- US-26 помечена устаревшей, US-27 переформулирована вокруг кубиков и User-элемента в [tests/user-stories.md](../tests/user-stories.md).
+- Реализация — коммит fbbe993, ревью без замечаний.
