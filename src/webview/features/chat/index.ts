@@ -7,3 +7,5 @@ export { ChatMessage } from './ui/ChatMessage';
 export type { ChatMessageProps } from './ui/ChatMessage';
 export { ChatFeed } from './ui/ChatFeed';
 export type { ChatFeedProps } from './ui/ChatFeed';
+export { ToolCard } from './ui/ToolCard';
+export type { ToolCardProps, ToolCardStatus } from './ui/ToolCard';

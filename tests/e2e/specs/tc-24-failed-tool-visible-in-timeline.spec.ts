@@ -23,8 +23,8 @@ import { agentWebviewContent } from '../helpers/webview';
  *
  * Ожидание:
  *   - В tools.jsonl tool_result для kb.read содержит `error` со словом «sandbox».
- *   - В DOM ленты есть `.run-details__tool-error-text` с этим же текстом.
- *   - Tool-карточка для упавшего вызова промечена `.run-details__tool-error`.
+ *   - В DOM ленты есть `.tool-card[data-status="error"]` для kb.read с текстом ошибки.
+ *   - Карточка автоматически развёрнута (последняя error-карточка #0021).
  */
 
 const BAD_PATH = '../../../etc/passwd';
@@ -64,24 +64,14 @@ test('TC-24: упавший tool_result виден в ленте с классо
 
   // 5. Ищем именно упавшую tool-карточку.
   //
-  //    Подвох: в ленте на одно failed-обращение приходится ДВА
-  //    `.run-details__entry--tool`-элемента — assistant-карточка с
-  //    tool_call (`🛠 модель вызывает тулы …kb.read…`) и tool_result-
-  //    карточка (`↪ kb.read … ошибка`). Оба содержат текст «kb.read»,
-  //    поэтому фильтр `hasText: 'kb.read'` ловит обе и Playwright
-  //    падает в strict mode.
-  //
-  //    Различаем по уникальному классу `.run-details__tool-error-text` —
-  //    он рендерится ТОЛЬКО в ветке tool_result.error. Это и есть
-  //    наш якорь к нужной карточке.
+  //    После #0021 одна tool-карточка соответствует одному tool_call'у:
+  //    call+result склеены в пару, статус `error` поставлен из
+  //    `tool_result.error`. Карточка помечена `data-status="error"` и
+  //    автоматически развёрнута (auto-expand для последней error-карточки).
+  //    Текст ошибки рендерится внутри развёрнутого тела.
   const ui = agentWebviewContent(vscodeWindow);
-  const errorText = ui.locator('.run-details__tool-error-text');
-  await expect(errorText).toBeVisible();
-  await expect(errorText).toContainText('sandbox');
-
-  const errorEntry = ui
-    .locator('.run-details__entry--tool')
-    .filter({ has: ui.locator('.run-details__tool-error-text') });
-  await expect(errorEntry).toContainText('kb.read');
-  await expect(errorEntry).toContainText('ошибка');
+  const errorCard = ui.locator('.tool-card[data-tool="kb.read"][data-status="error"]');
+  await expect(errorCard).toBeVisible();
+  await expect(errorCard).toContainText('sandbox');
+  await expect(errorCard).toContainText('error');
 });

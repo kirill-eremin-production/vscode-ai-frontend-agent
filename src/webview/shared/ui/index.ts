@@ -41,3 +41,5 @@ export type { TooltipProps } from './Tooltip';
 
 export { roleIcons } from './role-icons';
 export type { Role } from './role-icons';
+
+export { toolIconFor } from './tool-icons';

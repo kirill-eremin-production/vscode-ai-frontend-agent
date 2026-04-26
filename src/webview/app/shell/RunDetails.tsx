@@ -1,9 +1,9 @@
 import { useMemo, useState } from 'react';
-import { FileText } from 'lucide-react';
-import { openFile, sendFinalizeSignal, sendUserMessage, useRunsState } from '@shared/runs/store';
+import { sendFinalizeSignal, sendUserMessage, useRunsState } from '@shared/runs/store';
 import type { ChatMessage, RunMeta, RunStatus, ToolEvent } from '@shared/runs/types';
 import { contextLimitFor, zoneFor } from '@shared/runs/pricing';
-import { ChatFeed, ChatMessage as ChatBubble } from '@features/chat';
+import { ChatFeed, ChatMessage as ChatBubble, ToolCard } from '@features/chat';
+import type { ToolCardStatus } from '@features/chat';
 
 /**
  * Карточка деталей выбранного рана — центральная колонка.
@@ -230,13 +230,44 @@ function Composer(props: {
   );
 }
 
+type AssistantUsage = NonNullable<Extract<ToolEvent, { kind: 'assistant' }>['usage']>;
+
+interface ToolCallTimelineItem {
+  kind: 'tool';
+  key: string;
+  at: string;
+  name: string;
+  argumentsJson: string;
+  status: ToolCardStatus;
+  endedAt?: string;
+  result?: unknown;
+  error?: string;
+}
+
+type TimelineItem =
+  | { kind: 'chat'; key: string; at: string; message: ChatMessage }
+  | { kind: 'system'; key: string; at: string; message: string }
+  | { kind: 'usage'; key: string; at: string; usage: AssistantUsage }
+  | ToolCallTimelineItem;
+
 /**
- * Единая лента chat + tools: chat-сообщения рендерятся как bubble через
- * `<ChatMessage>` (#0020), tool-события — прежним способом (карточки
- * получат свою стилистику в #0021). Сортируется по timestamp `at`.
+ * Единая лента chat + tools (#0020 + #0021).
+ *
+ * Tool-события парсятся в пары call+result по `tool_call_id` и рендерятся
+ * как `<ToolCard>`. Чистый assistant без tool_calls (но с usage) даёт
+ * маленькую usage-строку. `kind: 'system'` — однострочная диагностика.
+ *
+ * Auto-expand: считаем «последняя error-карточка в видимой сессии» —
+ * для неё передаём `defaultOpen`. Остальные — свёрнуты по умолчанию,
+ * локальный state живёт внутри Collapsible.
  */
 function Timeline(props: { chat: ChatMessage[]; tools: ToolEvent[]; sessionId: string }) {
-  const items = useMemo(() => mergeTimeline(props.chat, props.tools), [props.chat, props.tools]);
+  const items = useMemo(() => buildTimeline(props.chat, props.tools), [props.chat, props.tools]);
+  const lastErrorKey = useMemo(() => {
+    let key: string | undefined;
+    for (const item of items) if (item.kind === 'tool' && item.status === 'error') key = item.key;
+    return key;
+  }, [items]);
 
   if (items.length === 0) {
     return (
@@ -248,171 +279,117 @@ function Timeline(props: { chat: ChatMessage[]; tools: ToolEvent[]; sessionId: s
 
   return (
     <ChatFeed resetKey={props.sessionId} contentKey={items.length}>
-      {items.map((item) =>
-        item.kind === 'chat' ? (
-          <ChatBubble key={item.key} message={item.message} />
-        ) : (
-          <ToolEntry key={item.key} event={item.event} />
-        )
-      )}
+      {items.map((item) => {
+        if (item.kind === 'chat') return <ChatBubble key={item.key} message={item.message} />;
+        if (item.kind === 'system') {
+          return (
+            <div key={item.key} className="run-details__tool-system text-[11px] text-muted px-1">
+              ⓘ {item.message} · {formatTime(item.at)}
+            </div>
+          );
+        }
+        if (item.kind === 'usage') {
+          return (
+            <div
+              key={item.key}
+              className="run-details__tool-header text-[11px] text-muted px-1"
+              title={`Модель: ${item.usage.model} · prompt ${item.usage.promptTokens} · completion ${item.usage.completionTokens}`}
+            >
+              финальный ответ · {formatCost(item.usage.costUsd)} ·{' '}
+              {formatTokens(item.usage.promptTokens)}/{formatTokens(item.usage.completionTokens)}
+            </div>
+          );
+        }
+        return (
+          <ToolCard
+            key={item.key}
+            name={item.name}
+            argumentsJson={item.argumentsJson}
+            startedAt={item.at}
+            endedAt={item.endedAt}
+            status={item.status}
+            result={item.result}
+            error={item.error}
+            defaultOpen={item.key === lastErrorKey}
+          />
+        );
+      })}
     </ChatFeed>
   );
 }
 
-type TimelineItem =
-  | { kind: 'chat'; key: string; at: string; message: ChatMessage }
-  | { kind: 'tool'; key: string; at: string; event: ToolEvent };
+function buildTimeline(chat: ChatMessage[], tools: ToolEvent[]): TimelineItem[] {
+  // 1) индексируем tool_result по tool_call_id, чтобы спарить с call'ом
+  const resultsById = new Map<
+    string,
+    { at: string; result?: unknown; error?: string; toolName: string }
+  >();
+  for (const event of tools) {
+    if (event.kind === 'tool_result') {
+      resultsById.set(event.tool_call_id, {
+        at: event.at,
+        result: event.result,
+        error: event.error,
+        toolName: event.tool_name,
+      });
+    }
+  }
 
-function mergeTimeline(chat: ChatMessage[], tools: ToolEvent[]): TimelineItem[] {
   const items: TimelineItem[] = [];
   for (const message of chat) {
     items.push({ kind: 'chat', key: `chat:${message.id}`, at: message.at, message });
   }
   tools.forEach((event, index) => {
-    items.push({
-      kind: 'tool',
-      key: `tool:${event.kind}:${event.at}:${index}`,
-      at: event.at,
-      event,
-    });
+    if (event.kind === 'system') {
+      items.push({
+        kind: 'system',
+        key: `sys:${event.at}:${index}`,
+        at: event.at,
+        message: event.message,
+      });
+      return;
+    }
+    if (event.kind === 'tool_result') return; // склеен в pair с call'ом ниже
+    // assistant
+    if (!event.tool_calls || event.tool_calls.length === 0) {
+      if (event.usage) {
+        items.push({
+          kind: 'usage',
+          key: `usage:${event.at}:${index}`,
+          at: event.at,
+          usage: event.usage,
+        });
+      }
+      return;
+    }
+    for (const call of event.tool_calls) {
+      const matched = resultsById.get(call.id);
+      const status: ToolCardStatus = !matched
+        ? 'running'
+        : matched.error !== undefined
+          ? 'error'
+          : 'ok';
+      items.push({
+        kind: 'tool',
+        key: `tool:${call.id}`,
+        at: event.at,
+        name: call.name,
+        argumentsJson: call.arguments,
+        status,
+        endedAt: matched?.at,
+        result: matched?.result,
+        error: matched?.error,
+      });
+    }
   });
   items.sort((left, right) => left.at.localeCompare(right.at));
   return items;
 }
 
-/**
- * Карточка tool-события (визуально не трогаем — #0021).
- */
-function ToolEntry(props: { event: ToolEvent }) {
-  const { event } = props;
-  const time = new Date(event.at).toLocaleTimeString();
-
-  if (event.kind === 'assistant') {
-    if (!event.tool_calls || event.tool_calls.length === 0) {
-      if (event.usage) {
-        return (
-          <div className="run-details__tool-header text-[11px] text-muted">
-            🛠 финальный ответ модели · {time}
-            <UsageBadge usage={event.usage} />
-          </div>
-        );
-      }
-      return null;
-    }
-    return (
-      <div className="run-details__entry--tool text-[12px]">
-        <div className="run-details__tool-header text-[11px] text-muted">
-          🛠 модель вызывает тулы · {time}
-          {event.usage && <UsageBadge usage={event.usage} />}
-        </div>
-        {event.tool_calls.map((call) => (
-          <ToolCallCard key={call.id} name={call.name} argumentsJson={call.arguments} />
-        ))}
-      </div>
-    );
-  }
-
-  if (event.kind === 'tool_result') {
-    const filePath = extractFilePath(event.result);
-    return (
-      <div className="run-details__entry--tool text-[12px]">
-        <div className="run-details__tool-header text-[11px] text-muted">
-          ↪ {event.tool_name} · {time}
-          {event.error !== undefined ? (
-            <span className="run-details__tool-error text-[var(--vscode-errorForeground)]">
-              {' '}
-              ошибка
-            </span>
-          ) : null}
-        </div>
-        {event.error !== undefined ? (
-          <pre className="run-details__tool-error-text text-[11px] whitespace-pre-wrap">
-            {event.error}
-          </pre>
-        ) : (
-          <details className="run-details__tool-result">
-            <summary className="text-[11px] cursor-pointer">Результат</summary>
-            <pre className="text-[11px] whitespace-pre-wrap">
-              {stringifyForPreview(event.result)}
-            </pre>
-          </details>
-        )}
-        {filePath && (
-          <button
-            className="run-details__file-link inline-flex items-center gap-1 text-foreground text-[11px]"
-            type="button"
-            onClick={() => openFile(toWorkspacePath(filePath))}
-            title="Открыть в редакторе"
-          >
-            <FileText size={12} aria-hidden="true" />
-            {filePath}
-          </button>
-        )}
-      </div>
-    );
-  }
-
-  return (
-    <div className="run-details__tool-system text-[11px] text-muted">
-      ⓘ {event.message} · {time}
-    </div>
-  );
-}
-
-function UsageBadge(props: {
-  usage: NonNullable<Extract<ToolEvent, { kind: 'assistant' }>['usage']>;
-}) {
-  const cost = formatCost(props.usage.costUsd);
-  return (
-    <span
-      className="run-details__usage-badge"
-      title={`Модель: ${props.usage.model} · prompt ${props.usage.promptTokens} · completion ${props.usage.completionTokens}`}
-    >
-      {' '}
-      · {cost} · {formatTokens(props.usage.promptTokens)}/
-      {formatTokens(props.usage.completionTokens)}
-    </span>
-  );
-}
-
-function ToolCallCard(props: { name: string; argumentsJson: string }) {
-  let pretty = props.argumentsJson;
-  try {
-    pretty = JSON.stringify(JSON.parse(props.argumentsJson), null, 2);
-  } catch {
-    // оставим как есть
-  }
-  return (
-    <details className="run-details__tool-call">
-      <summary className="text-[11px] cursor-pointer">
-        <code>{props.name}</code>
-      </summary>
-      <pre className="text-[11px] whitespace-pre-wrap">{pretty}</pre>
-    </details>
-  );
-}
-
-function extractFilePath(result: unknown): string | undefined {
-  if (typeof result !== 'object' || result === null) return undefined;
-  const candidate = (result as { path?: unknown }).path;
-  return typeof candidate === 'string' && candidate.length > 0 ? candidate : undefined;
-}
-
-function toWorkspacePath(relativeFromKb: string): string {
-  return `.agents/knowledge/${relativeFromKb}`;
-}
-
-function stringifyForPreview(value: unknown): string {
-  let serialized: string;
-  try {
-    serialized = JSON.stringify(value, null, 2);
-  } catch {
-    serialized = String(value);
-  }
-  if (serialized.length > 4000) {
-    return `${serialized.slice(0, 4000)}\n…\n[обрезано: ${serialized.length} символов всего]`;
-  }
-  return serialized;
+function formatTime(at: string): string {
+  const d = new Date(at);
+  if (Number.isNaN(d.getTime())) return at;
+  return d.toLocaleTimeString('ru-RU', { hour: '2-digit', minute: '2-digit', second: '2-digit' });
 }
 
 function formatCost(value: number | null): string {

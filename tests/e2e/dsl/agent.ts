@@ -299,27 +299,32 @@ export class AgentDriver {
   }
 
   /**
-   * Кликнуть по ссылке на файл в карточке tool_result и дождаться,
-   * пока VS Code откроет соответствующую вкладку редактора. Используется
-   * в TC-23 (видимость созданных файлов в ленте, US-11).
+   * Кликнуть по ссылке на файл в tool-карточке и дождаться, пока VS Code
+   * откроет соответствующую вкладку редактора. Используется в TC-23 (US-11).
+   *
+   * После #0021 карточки по умолчанию свёрнуты — сначала кликаем по
+   * trigger'у конкретной карточки (фильтруем по тулу `kb.write`), потом
+   * по ссылке `.tool-card__file-link` внутри неё.
    */
   async openFileFromToolEntry(relativePathFromKb: string): Promise<void> {
     const ui = agentWebviewContent(this.window);
-    const link = ui.locator('.run-details__file-link', { hasText: relativePathFromKb });
+    const card = ui.locator('.tool-card', { hasText: relativePathFromKb }).first();
+    await card.waitFor({ state: 'visible', timeout: 30_000 });
+    await card.locator('button[type="button"]').first().click();
+    const link = card.locator('.tool-card__file-link', { hasText: relativePathFromKb });
     await link.waitFor({ state: 'visible', timeout: 30_000 });
     await link.click();
   }
 
   /**
    * Дождаться появления tool-карточки с указанным именем тула в ленте.
-   * Лента мерджит chat.jsonl + tools.jsonl по timestamp, а карточки
-   * рендерятся по `runs.tool.appended`-broadcast'ам — это синхронизация
-   * с UI без обращения к диску.
+   * Карточки помечены `data-tool="<name>"` (#0021) — это устойчивее,
+   * чем `hasText`: имя моноширью внутри code не поедет по соседям.
    */
   async waitForToolEntry(toolName: string): Promise<void> {
     const ui = agentWebviewContent(this.window);
     await ui
-      .locator('.run-details__entry--tool', { hasText: toolName })
+      .locator(`.tool-card[data-tool="${toolName}"]`)
       .first()
       .waitFor({ state: 'visible', timeout: 30_000 });
   }
