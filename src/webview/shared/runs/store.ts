@@ -60,8 +60,15 @@ interface RunsState {
    * (< 700px) при первом старте инициализируется в true (см. useRunsWiring).
    */
   leftPanelCollapsed: boolean;
-  /** Свёрнут ли правый сайдбар (SessionsPanel). См. leftPanelCollapsed. */
-  rightPanelCollapsed: boolean;
+  /**
+   * Per-run явный выбор пользователя: свёрнута ли правая панель сессий
+   * (#0019). Если ключа нет — collapsed-state выводится из количества
+   * сессий рана через {@link selectSessionsPanelCollapsed} (одна сессия
+   * → свёрнуто, больше → развёрнуто). Persist'ится через UI-префы под
+   * ключом `sessionsPanel.collapsed.<runId>`, чтобы выбор пережил
+   * перезапуск VS Code.
+   */
+  sessionsPanelCollapsedByRun: Record<string, boolean>;
   /**
    * Режим main-area: 'run-details' — карточка выбранного рана,
    * 'new-run' — форма создания нового рана (#0018), 'empty' — приглашение
@@ -106,7 +113,7 @@ const initialState: RunsState = {
   selectedBrief: undefined,
   selectedPlan: undefined,
   leftPanelCollapsed: false,
-  rightPanelCollapsed: false,
+  sessionsPanelCollapsedByRun: {},
   mainAreaMode: 'empty',
   createRunPending: false,
   createRunError: undefined,
@@ -120,8 +127,19 @@ const initialState: RunsState = {
  */
 const UI_PREF_KEYS = {
   leftPanelCollapsed: 'shell.leftPanelCollapsed',
-  rightPanelCollapsed: 'shell.rightPanelCollapsed',
 } as const;
+
+/**
+ * Префикс для per-run UI-префов панели сессий (#0019). Конкретный ключ —
+ * `sessionsPanel.collapsed.<runId>`. Префикс держим отдельной константой,
+ * чтобы и writer (setSessionsPanelCollapsed), и reader (state.uiPrefs.result)
+ * собирали одно и то же имя без опечаток.
+ */
+const SESSIONS_PANEL_PREF_PREFIX = 'sessionsPanel.collapsed.';
+
+function sessionsPanelPrefKey(runId: string): string {
+  return `${SESSIONS_PANEL_PREF_PREFIX}${runId}`;
+}
 
 /**
  * Порог узкого окна, ниже которого обе панели по умолчанию свёрнуты
@@ -354,8 +372,6 @@ export function cancelNewRun(): void {
 export function setUiPref(key: string, value: unknown): void {
   if (key === UI_PREF_KEYS.leftPanelCollapsed && typeof value === 'boolean') {
     setState((prev) => ({ ...prev, leftPanelCollapsed: value }));
-  } else if (key === UI_PREF_KEYS.rightPanelCollapsed && typeof value === 'boolean') {
-    setState((prev) => ({ ...prev, rightPanelCollapsed: value }));
   }
   send({ type: 'state.setUiPref', key, value });
 }
@@ -364,8 +380,43 @@ export function setUiPref(key: string, value: unknown): void {
 export function setLeftPanelCollapsed(collapsed: boolean): void {
   setUiPref(UI_PREF_KEYS.leftPanelCollapsed, collapsed);
 }
-export function setRightPanelCollapsed(collapsed: boolean): void {
-  setUiPref(UI_PREF_KEYS.rightPanelCollapsed, collapsed);
+
+/**
+ * Записать явный выбор пользователя для панели сессий конкретного рана
+ * (#0019). Persist'ится отдельным ключом per-run, чтобы каждый ран помнил
+ * собственное предпочтение независимо от соседей. До первого вызова
+ * для рана collapsed-state выводится из количества сессий через
+ * {@link selectSessionsPanelCollapsed}.
+ */
+export function setSessionsPanelCollapsed(runId: string, collapsed: boolean): void {
+  setState((prev) => ({
+    ...prev,
+    sessionsPanelCollapsedByRun: {
+      ...prev.sessionsPanelCollapsedByRun,
+      [runId]: collapsed,
+    },
+  }));
+  send({ type: 'state.setUiPref', key: sessionsPanelPrefKey(runId), value: collapsed });
+}
+
+/**
+ * Эффективное «свёрнута ли правая панель» для текущего выбранного рана.
+ * Контракт #0019:
+ *  - явный выбор пользователя (`sessionsPanelCollapsedByRun[selectedId]`)
+ *    всегда побеждает;
+ *  - иначе fallback по количеству сессий: одна → свёрнуто, больше → нет;
+ *  - без выбранного рана панель свёрнута (показывать там нечего).
+ *
+ * Вынесено отдельным селектором, чтобы и AppShell (для grid-template),
+ * и сам SessionsPanel считали одно и то же.
+ */
+export function selectSessionsPanelCollapsed(state: RunsState): boolean {
+  const runId = state.selectedId;
+  if (!runId) return true;
+  const explicit = state.sessionsPanelCollapsedByRun[runId];
+  if (typeof explicit === 'boolean') return explicit;
+  const sessionsCount = state.selectedDetails?.meta.sessions.length ?? 0;
+  return sessionsCount <= 1;
 }
 
 /**
@@ -465,17 +516,24 @@ export function useRunsWiring(): void {
           return;
         }
         case 'state.uiPrefs.result': {
-          // Восстанавливаем сохранённое состояние сайдбаров. Если ключа
-          // нет в мапе — оставляем то, что положил порог NARROW_WINDOW_PX
-          // (первый запуск на узком окне → обе свёрнуты). Это даёт
-          // правильный layout без явного выбора пользователя.
+          // Восстанавливаем сохранённое состояние левого сайдбара и
+          // per-run префов панели сессий (#0019). Per-run собираем по
+          // префиксу `sessionsPanel.collapsed.<runId>` — extension
+          // отдаёт всю мапу одной пачкой, по ней проходимся в один цикл.
           setState((prev) => {
             const left = data.prefs[UI_PREF_KEYS.leftPanelCollapsed];
-            const right = data.prefs[UI_PREF_KEYS.rightPanelCollapsed];
+            const sessionsByRun: Record<string, boolean> = {
+              ...prev.sessionsPanelCollapsedByRun,
+            };
+            for (const [key, value] of Object.entries(data.prefs)) {
+              if (!key.startsWith(SESSIONS_PANEL_PREF_PREFIX)) continue;
+              if (typeof value !== 'boolean') continue;
+              sessionsByRun[key.slice(SESSIONS_PANEL_PREF_PREFIX.length)] = value;
+            }
             return {
               ...prev,
               leftPanelCollapsed: typeof left === 'boolean' ? left : prev.leftPanelCollapsed,
-              rightPanelCollapsed: typeof right === 'boolean' ? right : prev.rightPanelCollapsed,
+              sessionsPanelCollapsedByRun: sessionsByRun,
             };
           });
           return;
@@ -643,16 +701,12 @@ export function useRunsWiring(): void {
 
     window.addEventListener('message', onMessage);
 
-    // На первом старте применяем порог узкого окна: если сохранённых
-    // префов ещё нет (см. `state.uiPrefs.result` ниже), пользователь
-    // увидит обе панели свёрнутыми — иначе на узком sidebar-view они
-    // съели бы всю ширину main-area.
+    // На первом старте на узком окне сворачиваем левый сайдбар, чтобы
+    // он не съедал ширину main-area. Правую панель сессий не трогаем —
+    // её collapsed-state теперь per-run и считается в селекторе по
+    // количеству сессий (см. selectSessionsPanelCollapsed).
     if (typeof window !== 'undefined' && window.innerWidth < NARROW_WINDOW_PX) {
-      setState((prev) => ({
-        ...prev,
-        leftPanelCollapsed: true,
-        rightPanelCollapsed: true,
-      }));
+      setState((prev) => ({ ...prev, leftPanelCollapsed: true }));
     }
 
     // При первом монтировании сразу запрашиваем актуальный список —

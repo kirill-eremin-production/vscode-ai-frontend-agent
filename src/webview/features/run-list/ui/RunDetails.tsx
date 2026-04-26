@@ -1,19 +1,7 @@
 import { useMemo, useState } from 'react';
 import { FileText } from 'lucide-react';
-import {
-  openFile,
-  selectSession,
-  sendFinalizeSignal,
-  sendUserMessage,
-  useRunsState,
-} from '@shared/runs/store';
-import type {
-  ChatMessage,
-  RunMeta,
-  RunStatus,
-  SessionSummary,
-  ToolEvent,
-} from '@shared/runs/types';
+import { openFile, sendFinalizeSignal, sendUserMessage, useRunsState } from '@shared/runs/store';
+import type { ChatMessage, RunMeta, RunStatus, ToolEvent } from '@shared/runs/types';
 import { contextLimitFor, zoneFor } from '@shared/runs/pricing';
 
 /**
@@ -24,9 +12,6 @@ import { contextLimitFor, zoneFor } from '@shared/runs/pricing';
  *  - {@link RunUsageHeader} — суммарная стоимость рана, индикатор
  *    заполненности контекста и кнопка «Сжать» (US-12);
  *  - блок «Запрос» (исходный prompt пользователя);
- *  - {@link SessionTabs} — список сессий рана; на Phase 1 (#0008)
- *    всегда одна, но заводим вкладочный UI заранее, чтобы #0013
- *    (компактификация) подключился без правки разметки;
  *  - {@link AskUserBanner} — баннер pending-вопроса (если есть);
  *  - блок «Бриф» (если `brief.md` уже на диске);
  *  - единая лента chat + tools (см. {@link Timeline});
@@ -66,12 +51,6 @@ export function RunDetails() {
         <h3>Запрос</h3>
         <pre>{meta.prompt}</pre>
       </section>
-      <SessionTabs
-        runId={meta.id}
-        sessions={meta.sessions}
-        activeSessionId={meta.activeSessionId}
-        viewedSessionId={viewedSessionId}
-      />
       {pendingAsk && <AskUserBanner question={pendingAsk.question} context={pendingAsk.context} />}
       {selectedBrief && (
         <section className="run-details__brief">
@@ -164,140 +143,6 @@ function RunUsageHeader(props: { meta: RunMeta }) {
       </div>
     </section>
   );
-}
-
-/**
- * Дерево вкладок сессий рана (#0012). Корни — сессии без `parentSessionId`
- * (изначальная user↔agent), дети — agent↔agent сессии-мосты, рождённые
- * handoff'ом. Глубина обычно 1 (root → bridge), но компонент рекурсивный
- * — добавление третьей роли (программист) не потребует правок.
- *
- * Подсветка:
- *  - `--active` маркирует **просматриваемую** сессию;
- *  - ● отдельным значком показывает живую сессию (`activeSessionId`) —
- *    туда уйдёт следующий ввод пользователя через composer.
- */
-function SessionTabs(props: {
-  runId: string;
-  sessions: SessionSummary[];
-  activeSessionId: string;
-  viewedSessionId: string;
-}) {
-  const tree = useMemo(() => buildSessionTree(props.sessions), [props.sessions]);
-  if (props.sessions.length === 0) return null;
-  return (
-    <nav className="run-details__sessions" aria-label="Сессии рана">
-      <SessionTreeLevel
-        nodes={tree}
-        depth={0}
-        runId={props.runId}
-        activeSessionId={props.activeSessionId}
-        viewedSessionId={props.viewedSessionId}
-      />
-    </nav>
-  );
-}
-
-interface SessionNode {
-  session: SessionSummary;
-  /** Сквозной индекс по всем сессиям рана — для дефолтного label «Session N». */
-  index: number;
-  children: SessionNode[];
-}
-
-/**
- * Собрать lookup parent → children. Сироты (parentSessionId, чьего родителя
- * нет в списке) поднимаются в корень — иначе невидимыми останутся.
- * Сортируем братьев и сестёр по `createdAt`: время — единственный
- * естественный порядок «как разворачивались события рана».
- */
-function buildSessionTree(sessions: SessionSummary[]): SessionNode[] {
-  const indexById = new Map<string, number>();
-  sessions.forEach((s, i) => indexById.set(s.id, i));
-  const nodes: SessionNode[] = sessions.map((session, index) => ({
-    session,
-    index,
-    children: [],
-  }));
-  const nodeById = new Map<string, SessionNode>();
-  for (const node of nodes) nodeById.set(node.session.id, node);
-  const roots: SessionNode[] = [];
-  for (const node of nodes) {
-    const parentId = node.session.parentSessionId;
-    const parent = parentId ? nodeById.get(parentId) : undefined;
-    if (parent) parent.children.push(node);
-    else roots.push(node);
-  }
-  const sortByCreated = (a: SessionNode, b: SessionNode) =>
-    a.session.createdAt.localeCompare(b.session.createdAt);
-  roots.sort(sortByCreated);
-  for (const node of nodes) node.children.sort(sortByCreated);
-  return roots;
-}
-
-function SessionTreeLevel(props: {
-  nodes: SessionNode[];
-  depth: number;
-  runId: string;
-  activeSessionId: string;
-  viewedSessionId: string;
-}) {
-  return (
-    <ul
-      className="run-details__session-tree"
-      style={{
-        listStyle: 'none',
-        margin: 0,
-        paddingLeft: props.depth === 0 ? 0 : 16,
-      }}
-    >
-      {props.nodes.map((node) => {
-        const isViewed = node.session.id === props.viewedSessionId;
-        const isLive = node.session.id === props.activeSessionId;
-        const label = sessionLabel(node.session, node.index);
-        return (
-          <li key={node.session.id} style={{ margin: '2px 0' }}>
-            <button
-              type="button"
-              className={`run-details__session-tab${isViewed ? ' run-details__session-tab--active' : ''}`}
-              onClick={() => selectSession(props.runId, node.session.id)}
-              title={`${label} · статус ${node.session.status}${isLive ? ' · активная' : ''} · ${formatTokens(node.session.usage.inputTokens + node.session.usage.outputTokens)} токенов`}
-            >
-              {props.depth > 0 && <span aria-hidden="true">↳ </span>}
-              {label}
-              {isLive && <span className="run-details__session-badge"> ●</span>}
-              {node.session.status === 'compacted' && (
-                <span className="run-details__session-badge"> compacted</span>
-              )}
-            </button>
-            {node.children.length > 0 && (
-              <SessionTreeLevel
-                nodes={node.children}
-                depth={props.depth + 1}
-                runId={props.runId}
-                activeSessionId={props.activeSessionId}
-                viewedSessionId={props.viewedSessionId}
-              />
-            )}
-          </li>
-        );
-      })}
-    </ul>
-  );
-}
-
-/**
- * Имя таба сессии — короткая подсказка о её роли. По `kind`:
- *  - user-agent → «Чат N» (initial — обычно с продактом);
- *  - agent-agent → «🤝 Передача» (мост между агентами, после handoff'а).
- * Имя конкретной роли не показываем: webview не знает констант ролей,
- * не хочется дублировать. Hybrid (после user-intervention) сейчас
- * визуально не отличается — делается отдельным badge'ом ниже, по
- * participants, если когда-нибудь захочется.
- */
-function sessionLabel(session: SessionSummary, index: number): string {
-  if (session.kind === 'agent-agent') return `🤝 Передача`;
-  return `Чат ${index + 1}`;
 }
 
 /**

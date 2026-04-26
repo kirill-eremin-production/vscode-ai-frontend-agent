@@ -1,8 +1,9 @@
 ---
 id: 0019
 title: Панель дерева сессий справа (вынос из RunDetails)
-status: open
+status: done
 created: 2026-04-26
+closed: 2026-04-26
 ---
 
 ## Context

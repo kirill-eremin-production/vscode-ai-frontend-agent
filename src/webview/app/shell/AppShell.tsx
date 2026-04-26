@@ -1,14 +1,14 @@
 import { OpenInTabButton } from '@features/open-in-tab';
-import { useRunsState } from '@shared/runs/store';
+import { SessionsPanel } from '@features/sessions-panel';
+import { selectSessionsPanelCollapsed, useRunsState } from '@shared/runs/store';
 import { MainArea } from './MainArea';
 import { RunListPanel } from './RunListPanel';
-import { SessionsPanel } from './SessionsPanel';
 
 /**
  * Корневой layout webview'а — три колонки `[RunListPanel] [MainArea] [SessionsPanel]`
- * (#0017). Левая и правая панели независимо collapsible, состояние
- * persist'ится через UI-префы (см. `setLeftPanelCollapsed` /
- * `setRightPanelCollapsed`).
+ * (#0017). Левая панель — глобально collapsible через UI-преф; правая
+ * (панель сессий) — per-run (#0019), её ширина считается через
+ * `selectSessionsPanelCollapsed` от выбранного рана.
  *
  * Ширины колонок управляются CSS Grid через `grid-template-columns`:
  * у крайних колонок два значения — collapsed (32px полоса с иконками)
@@ -23,10 +23,11 @@ const COLUMN_EXPANDED = '240px';
 const COLUMN_COLLAPSED = '32px';
 
 export function AppShell() {
-  const { leftPanelCollapsed, rightPanelCollapsed } = useRunsState();
+  const state = useRunsState();
+  const sessionsCollapsed = selectSessionsPanelCollapsed(state);
 
-  const gridTemplate = `${leftPanelCollapsed ? COLUMN_COLLAPSED : COLUMN_EXPANDED} 1fr ${
-    rightPanelCollapsed ? COLUMN_COLLAPSED : COLUMN_EXPANDED
+  const gridTemplate = `${state.leftPanelCollapsed ? COLUMN_COLLAPSED : COLUMN_EXPANDED} 1fr ${
+    sessionsCollapsed ? COLUMN_COLLAPSED : COLUMN_EXPANDED
   }`;
 
   return (
@@ -36,9 +37,9 @@ export function AppShell() {
         <OpenInTabButton />
       </header>
       <div className="grid flex-1 min-h-0" style={{ gridTemplateColumns: gridTemplate }}>
-        <RunListPanel collapsed={leftPanelCollapsed} />
+        <RunListPanel collapsed={state.leftPanelCollapsed} />
         <MainArea />
-        <SessionsPanel collapsed={rightPanelCollapsed} />
+        <SessionsPanel />
       </div>
     </div>
   );
