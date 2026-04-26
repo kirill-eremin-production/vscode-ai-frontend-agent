@@ -1,7 +1,7 @@
 ---
 id: 0016
 title: Компонентная библиотека атомов и Storybook
-status: open
+status: done
 created: 2026-04-26
 ---
 
@@ -60,3 +60,14 @@ Storybook:
 - US-17.
 - Зависит от: #0015 (токены и Tailwind).
 - Блокирует: #0017, #0020, #0021, #0022, #0023 — все они потребляют атомы.
+
+## Outcome
+
+- 11 атомов в [src/webview/shared/ui/](../src/webview/shared/ui/), каждый со своим `*.stories.tsx` и реэкспортом из [index.ts](../src/webview/shared/ui/index.ts): `Button`, `IconButton`, `Spinner`, `LoadingState`, `Skeleton`, `Badge`, `Panel`, `Collapsible`, `EmptyState`, `Avatar`, `Tooltip`.
+- `aria-label` для `IconButton` сделан **обязательным TypeScript-полем** вместо custom ESLint-rule из acceptance — тот же эффект (компилятор валит сборку без accessible name), без новой инфраструктуры.
+- Маппинг ролей — [role-icons.ts](../src/webview/shared/ui/role-icons.ts), используется `Avatar` и зарезервирован для канваса #0023.
+- Storybook **9** (а не 8 как в acceptance — взял актуальную ветку, API `@storybook/react-vite` совместим). Vite-builder, общий `app.css` из #0015 импортируется в `preview.tsx`, темы переключаются toolbar-аддоном через `data-vscode-theme` на `<html>` и моки `--vscode-*` в [.storybook/vscode-themes.css](../.storybook/vscode-themes.css) — три темы (Dark/Light/HC).
+- Скрипты: `npm run storybook` (dev на :6006, без авто-открытия), `npm run build-storybook`. `storybook-static/` в `.gitignore` и ESLint-ignore, отдельный ESLint-блок для `.storybook/**`.
+- Tooltip/Collapsible — поверх Radix (`@radix-ui/react-tooltip`, `@radix-ui/react-collapsible`), Popover установлен на будущее (пока не используется ни одним атомом).
+- README — [src/webview/shared/ui/README.md](../src/webview/shared/ui/README.md): что есть, как добавить новый атом, что НЕ кладём в эту папку, заметка про visual regression.
+- Visual regression и миграция существующих компонентов на новые атомы — намеренно вне scope (`#0017`–`#0022`).

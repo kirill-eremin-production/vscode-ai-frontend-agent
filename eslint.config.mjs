@@ -20,6 +20,9 @@ export default tseslint.config(
       // .vscode-test/ — каталог скачанного VS Code для Playwright; внутри
       // тысячи bundled JS встроенных extensions, ESLint туда лезть не должен.
       '.vscode-test/**',
+      // storybook-static/ — артефакт `npm run build-storybook`, тысячи
+      // минифицированных JS/HTML, в lint не нужен.
+      'storybook-static/**',
       '*.vsix',
     ],
   },
@@ -73,6 +76,26 @@ export default tseslint.config(
     rules: {
       ...reactHooks.configs.recommended.rules,
     },
+  },
+  // .storybook/ — конфиг сборщика сторис. Лежит вне src/, поэтому
+  // FSD-границы и правила webview к нему не применяются. Но preview.tsx
+  // — React-файл с JSX, а main.ts/preview.tsx обращаются к Node-API
+  // Storybook (см. mergeConfig из vite). Даём ему оба набора globals
+  // и react-jsx, чтобы ESLint не подсвечивал «React is not defined» и
+  // «process is not defined».
+  {
+    files: ['.storybook/**/*.{ts,tsx}'],
+    ...react.configs.flat.recommended,
+    ...react.configs.flat['jsx-runtime'],
+    languageOptions: {
+      globals: { ...globals.browser, ...globals.node },
+      parserOptions: {
+        ecmaFeatures: { jsx: true },
+      },
+    },
+    plugins: { react, 'react-hooks': reactHooks },
+    settings: { react: { version: '19.2.5' } },
+    rules: { ...reactHooks.configs.recommended.rules },
   },
   // ──────────────────────────────────────────────────────────────────────
   // FSD-границы через eslint-plugin-boundaries.

@@ -77,6 +77,8 @@
     "test:e2e:full": "playwright test --config tests/e2e/playwright.config.ts",
     "test:e2e:full:ui": "playwright test --config tests/e2e/playwright.config.ts --ui",
     "test:e2e:report": "playwright show-report playwright-report",
+    "storybook": "storybook dev -p 6006 --no-open",
+    "build-storybook": "storybook build",
     "package": "vsce package",
     "install:local": "npm run package && code --install-extension vscode-ai-frontend-agent-$npm_package_version.vsix --force",
     "prepare": "husky"
@@ -91,6 +93,9 @@
     ]
   },
   "dependencies": {
+    "@radix-ui/react-collapsible": "^1.1.12",
+    "@radix-ui/react-popover": "^1.1.15",
+    "@radix-ui/react-tooltip": "^1.2.8",
     "ajv": "^8.20.0",
     "clsx": "^2.1.1",
     "lucide-react": "^1.11.0",
@@ -101,11 +106,14 @@
   "devDependencies": {
     "@eslint/js": "^9.39.4",
     "@playwright/test": "^1.59.1",
+    "@storybook/react-vite": "^9.1.20",
     "@tailwindcss/cli": "^4.2.4",
+    "@tailwindcss/vite": "^4.2.4",
     "@types/node": "^24.12.2",
     "@types/react": "^19.2.0",
     "@types/react-dom": "^19.2.0",
     "@types/vscode": "^1.95.0",
+    "@vitejs/plugin-react": "^5.2.0",
     "@vscode/test-electron": "^2.5.2",
     "@vscode/vsce": "^3.8.1",
     "esbuild": "^0.28.0",
@@ -120,8 +128,10 @@
     "lint-staged": "^16.4.0",
     "npm-run-all": "^4.1.5",
     "prettier": "^3.8.3",
+    "storybook": "^9.1.20",
     "typescript": "^6.0.0",
     "typescript-eslint": "^8.58.2",
+    "vite": "^6.4.2",
     "vitest": "^4.1.5"
   }
 }

@@ -1,0 +1,128 @@
+/*
+ * Мок vscode-переменных для Storybook.
+ *
+ * В боевом webview эти переменные ставит сам VS Code на `<html>` в runtime,
+ * и они меняются при переключении темы пользователя. В Storybook никакого
+ * VS Code нет — без подмены наши токены (`--color-foreground` → `var(--vscode-foreground)`)
+ * резолвятся в пустоту, и компоненты выглядят сломанными.
+ *
+ * Поэтому мы вручную задаём набор `--vscode-*` для трёх стандартных тем
+ * VS Code и переключаем их через `data-vscode-theme` на `<html>`
+ * (см. preview.tsx и Storybook globalTypes). Значения подобраны близко
+ * к темам "Dark Modern", "Light Modern" и "Dark High Contrast" — точные
+ * hex'ы не критичны: цель — увидеть отличимое поведение в трёх режимах,
+ * а не воспроизвести темы попиксельно.
+ */
+
+/* По умолчанию — Dark Modern. Так выглядит большинство пользователей VS Code. */
+:root,
+[data-vscode-theme='dark'] {
+  --vscode-foreground: #cccccc;
+  --vscode-descriptionForeground: #9d9d9d;
+  --vscode-disabledForeground: #5a5a5a;
+  --vscode-editor-background: #1f1f1f;
+  --vscode-editorWidget-background: #252526;
+  --vscode-menu-background: #1f1f1f;
+  --vscode-panel-border: #2b2b2b;
+  --vscode-widget-border: #313131;
+  --vscode-focusBorder: #0078d4;
+  --vscode-button-background: #0078d4;
+  --vscode-button-foreground: #ffffff;
+  --vscode-button-hoverBackground: #026ec1;
+  --vscode-button-secondaryBackground: #313131;
+  --vscode-button-secondaryForeground: #cccccc;
+  --vscode-button-secondaryHoverBackground: #3c3c3c;
+  --vscode-input-background: #313131;
+  --vscode-input-foreground: #cccccc;
+  --vscode-input-border: #3c3c3c;
+  --vscode-list-hoverBackground: #2a2d2e;
+  --vscode-list-activeSelectionBackground: #04395e;
+  --vscode-list-activeSelectionForeground: #ffffff;
+  --vscode-textLink-foreground: #4daafc;
+  --vscode-textLink-activeForeground: #4daafc;
+  --vscode-textBlockQuote-border: #3c3c3c;
+  --vscode-errorForeground: #f48771;
+  --vscode-editorWarning-foreground: #cca700;
+  --vscode-charts-blue: #4daafc;
+  --vscode-charts-purple: #b180d7;
+  --vscode-charts-green: #89d185;
+  --vscode-charts-yellow: #ffb300;
+  --vscode-font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+  --vscode-editor-font-family: 'SF Mono', Menlo, Monaco, monospace;
+  color-scheme: dark;
+}
+
+[data-vscode-theme='light'] {
+  --vscode-foreground: #3b3b3b;
+  --vscode-descriptionForeground: #717171;
+  --vscode-disabledForeground: #a5a5a5;
+  --vscode-editor-background: #ffffff;
+  --vscode-editorWidget-background: #f8f8f8;
+  --vscode-menu-background: #ffffff;
+  --vscode-panel-border: #e5e5e5;
+  --vscode-widget-border: #d4d4d4;
+  --vscode-focusBorder: #005fb8;
+  --vscode-button-background: #005fb8;
+  --vscode-button-foreground: #ffffff;
+  --vscode-button-hoverBackground: #026ec1;
+  --vscode-button-secondaryBackground: #e5e5e5;
+  --vscode-button-secondaryForeground: #3b3b3b;
+  --vscode-button-secondaryHoverBackground: #d4d4d4;
+  --vscode-input-background: #ffffff;
+  --vscode-input-foreground: #3b3b3b;
+  --vscode-input-border: #cecece;
+  --vscode-list-hoverBackground: #e8e8e8;
+  --vscode-list-activeSelectionBackground: #0060c0;
+  --vscode-list-activeSelectionForeground: #ffffff;
+  --vscode-textLink-foreground: #005fb8;
+  --vscode-textLink-activeForeground: #005fb8;
+  --vscode-textBlockQuote-border: #d4d4d4;
+  --vscode-errorForeground: #e51400;
+  --vscode-editorWarning-foreground: #bf8803;
+  --vscode-charts-blue: #1f6feb;
+  --vscode-charts-purple: #8250df;
+  --vscode-charts-green: #1a7f37;
+  --vscode-charts-yellow: #bf8803;
+  color-scheme: light;
+}
+
+[data-vscode-theme='hc-dark'] {
+  --vscode-foreground: #ffffff;
+  --vscode-descriptionForeground: #ffffff;
+  --vscode-disabledForeground: #a6a6a6;
+  --vscode-editor-background: #000000;
+  --vscode-editorWidget-background: #0c141f;
+  --vscode-menu-background: #000000;
+  --vscode-panel-border: #6fc3df;
+  --vscode-widget-border: #6fc3df;
+  --vscode-focusBorder: #f38518;
+  --vscode-button-background: #000000;
+  --vscode-button-foreground: #ffffff;
+  --vscode-button-hoverBackground: #000000;
+  --vscode-button-secondaryBackground: #000000;
+  --vscode-button-secondaryForeground: #ffffff;
+  --vscode-button-secondaryHoverBackground: #000000;
+  --vscode-input-background: #000000;
+  --vscode-input-foreground: #ffffff;
+  --vscode-input-border: #6fc3df;
+  --vscode-list-hoverBackground: #000000;
+  --vscode-list-activeSelectionBackground: #000000;
+  --vscode-list-activeSelectionForeground: #ffffff;
+  --vscode-textLink-foreground: #6fc3df;
+  --vscode-textLink-activeForeground: #6fc3df;
+  --vscode-textBlockQuote-border: #6fc3df;
+  --vscode-errorForeground: #f48771;
+  --vscode-editorWarning-foreground: #ffd700;
+  --vscode-charts-blue: #6fc3df;
+  --vscode-charts-purple: #d670d6;
+  --vscode-charts-green: #b5cea8;
+  --vscode-charts-yellow: #ffd700;
+  color-scheme: dark;
+}
+
+body {
+  background: var(--vscode-editor-background);
+  color: var(--vscode-foreground);
+  font-family: var(--vscode-font-family);
+  padding: 16px;
+}
