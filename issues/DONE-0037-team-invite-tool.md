@@ -1,7 +1,7 @@
 ---
 id: 0037
 title: Тул team.invite — приглашение соседнего по уровню агента
-status: open
+status: done
 created: 2026-04-26
 ---
 
@@ -34,3 +34,16 @@ created: 2026-04-26
 - Подзадача #0032.
 - Зависит от: #0033, #0036.
 - Блокирует: #0039 (промпты ролей).
+
+## Outcome
+
+Реализовано в коммите fa8b444. Фабрика `buildTeamInviteTool(caller)` в
+[src/extension/features/team/invite-tool.ts](../src/extension/features/team/invite-tool.ts)
+жёстко зашивает роль-инициатора в замыкание (модель не может выдать
+себя за другую роль через аргумент). Через уровень и self-invite
+отказывает текстом-подсказкой про `team.escalate` (#0038); соседи
+композитят `pullIntoRoom` (#0036) и `appendChatMessage` от имени
+caller'а; повторный invite той же роли — pullIntoRoom no-op, событие
+`participant_joined` не дублируется, новое сообщение записывается
+(см. AC). Тул зарегистрирован в реестрах продакта, архитектора и
+программиста; покрытие — 4 unit-сюиты, US-37, TC-44 (ручной).
