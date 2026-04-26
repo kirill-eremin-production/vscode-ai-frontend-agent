@@ -20,9 +20,10 @@ import {
  * Структура диска:
  *   .agents/
  *     knowledge/                        # общая база знаний (kb)
+ *       product/briefs/<runId>-<slug>.md  # продуктовые артефакты (#0011)
  *     runs/<runId>/
- *       meta.json                       # RunMeta (см. types.ts)
- *       brief.md                        # один на ран, опциональный
+ *       meta.json                       # RunMeta (см. types.ts) +
+ *                                       # `briefPath` — ссылка в kb
  *       sessions/<sessionId>/
  *         meta.json                     # SessionMeta
  *         chat.jsonl                    # лента сообщений сессии
@@ -44,7 +45,9 @@ const META_FILE = 'meta.json';
 const CHAT_FILE = 'chat.jsonl';
 const TOOLS_FILE = 'tools.jsonl';
 const LOOP_FILE = 'loop.json';
-const BRIEF_FILE = 'brief.md';
+
+/** Подкаталог в kb для брифов продакта (#0011). */
+const PRODUCT_BRIEFS_DIR = path.join('product', 'briefs');
 
 /**
  * Кастомная ошибка хранилища — на случаях, когда дальнейшая работа
@@ -514,27 +517,88 @@ export async function readLoopConfig(
   }
 }
 
-/* ── Brief (per-run) ────────────────────────────────────────────── */
+/* ── Brief (per-run, stored in shared kb) ───────────────────────── */
 
 /**
- * Атомарно записать `brief.md` рана. Бриф один на ран — он живёт в
- * корне рана, а не в сессии: после компактификации новая сессия
- * продолжает работать с тем же brief.md.
+ * Превратить заголовок рана в безопасный slug для имени файла в kb.
  *
- * (Перенос brief в `.agents/knowledge/` — отдельный тикет #0011.)
+ * Поддерживаем юникодные буквы (включая кириллицу) — fs всех целевых ОС
+ * с ними справляется, а пользователю в проводнике приятнее видеть
+ * `20260426...-счётчик-кликов.md`, чем транслит. Всё, что не буква и не
+ * цифра, заменяется на `-`; край-кейсы (пустой, длинный) подрезаем
+ * жёстко, иначе на длинных prompt'ах получим имя файла в 200 символов.
  */
-export async function writeBrief(runId: string, content: string): Promise<void> {
-  const finalPath = path.join(getRunDir(runId), BRIEF_FILE);
-  const tmpPath = `${finalPath}.tmp`;
-  await fs.writeFile(tmpPath, content, 'utf8');
-  await fs.rename(tmpPath, finalPath);
+function slugifyTitle(title: string): string {
+  const base = title
+    .toLowerCase()
+    .replace(/[^\p{L}\p{N}]+/gu, '-')
+    .replace(/^-+|-+$/g, '');
+  if (base.length === 0) return 'untitled';
+  return base.length > 60 ? base.slice(0, 60).replace(/-+$/g, '') : base;
 }
 
-/** Прочитать `brief.md` рана. Undefined — файла ещё нет. */
+/**
+ * Построить относительный путь брифа в kb. Возвращает путь относительно
+ * workspace root: `.agents/knowledge/product/briefs/<runId>-<slug>.md`.
+ * Используется и для записи, и для записи в `meta.briefPath` (UI открывает
+ * файл через `editor.open`, который ожидает workspace-relative путь).
+ */
+function buildBriefRelativePath(runId: string, title: string): string {
+  const filename = `${runId}-${slugifyTitle(title)}.md`;
+  return path.join(ROOT_DIR_NAME, KNOWLEDGE_DIR_NAME, PRODUCT_BRIEFS_DIR, filename);
+}
+
+/**
+ * Атомарно записать бриф в общую kb и сохранить ссылку в `meta.briefPath`.
+ * Возвращает обновлённую RunMeta (для broadcast'а) и итоговый
+ * workspace-relative путь.
+ *
+ * Почему kb, а не корень рана:
+ *  - бриф — продукт работы, общий ресурс проекта; следующие роли
+ *    (архитектор, программист) и сам пользователь читают его как
+ *    обычный файл репозитория, не «знай идентификатор рана»;
+ *  - после компактификации (#0013) и мульти-агента (#0012) сессии
+ *    одного рана не должны драться за `brief.md` в каждой папке.
+ *
+ * Имя файла включает `runId`, чтобы один проект мог накопить несколько
+ * брифов от разных ранов без коллизий. Slug добавлен для читаемости
+ * в проводнике/git-blame.
+ */
+export async function writeBrief(
+  runId: string,
+  title: string,
+  content: string
+): Promise<{ run: RunMeta | undefined; briefPath: string }> {
+  const relPath = buildBriefRelativePath(runId, title);
+  const absPath = path.join(getWorkspaceRoot(), relPath);
+  await fs.mkdir(path.dirname(absPath), { recursive: true });
+  const tmpPath = `${absPath}.tmp`;
+  await fs.writeFile(tmpPath, content, 'utf8');
+  await fs.rename(tmpPath, absPath);
+
+  const run = await readMeta(runId);
+  if (!run) return { run: undefined, briefPath: relPath };
+  const updated: RunMeta = {
+    ...run,
+    briefPath: relPath,
+    updatedAt: new Date().toISOString(),
+  };
+  await writeMeta(updated);
+  return { run: updated, briefPath: relPath };
+}
+
+/**
+ * Прочитать бриф рана. Undefined — `meta.briefPath` ещё не проставлен
+ * (роль не финализировала ран) или файл удалён вручную. Чтение через
+ * meta, а не по фиксированному пути, потому что путь зависит от title
+ * рана и не вычисляется без него.
+ */
 export async function readBrief(runId: string): Promise<string | undefined> {
-  const filePath = path.join(getRunDir(runId), BRIEF_FILE);
+  const meta = await readMeta(runId);
+  if (!meta?.briefPath) return undefined;
+  const absPath = path.join(getWorkspaceRoot(), meta.briefPath);
   try {
-    return await fs.readFile(filePath, 'utf8');
+    return await fs.readFile(absPath, 'utf8');
   } catch {
     return undefined;
   }

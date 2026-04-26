@@ -10,6 +10,7 @@ import {
 } from '@ext/shared/agent-loop';
 import {
   appendChatMessage,
+  readMeta,
   updateRunStatus,
   writeBrief,
   writeLoopConfig,
@@ -112,7 +113,12 @@ async function finalizeRun(runId: string, outcome: AgentLoopResult): Promise<voi
       return;
     }
 
-    await writeBrief(runId, brief);
+    // title нужен writeBrief'у для slug'а имени файла. Берём из RunMeta —
+    // он гарантированно проставлен в createRun (generateTitle с fallback).
+    // Если меты вдруг нет (ран удалили вручную) — пишем под 'untitled',
+    // лишь бы не упасть и не потерять текст модели.
+    const meta = await readMeta(runId);
+    await writeBrief(runId, meta?.title ?? 'untitled', brief);
     const preview = brief.length > 600 ? `${brief.slice(0, 600)}…` : brief;
     await appendProductChatMessage(runId, preview);
     const updated = await updateRunStatus(runId, 'awaiting_human');

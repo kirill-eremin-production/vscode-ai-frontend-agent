@@ -4,10 +4,9 @@ import * as path from 'node:path';
 /**
  * Read-only акcессор к артефактам одного рана.
  *
- * Layout (после #0008):
+ * Layout (после #0008 + #0011):
  *   .agents/runs/<runId>/
- *     meta.json              # RunMeta (включает activeSessionId, usage, sessions[])
- *     brief.md               # один на ран (опциональный)
+ *     meta.json              # RunMeta (activeSessionId, usage, sessions[], briefPath)
  *     sessions/<sessionId>/
  *       meta.json            # SessionMeta
  *       chat.jsonl
@@ -85,6 +84,8 @@ export interface RunMetaSnapshot {
   activeSessionId: string;
   sessions: SessionSummary[];
   usage: UsageAggregate;
+  /** Путь к brief.md в kb относительно workspace (после #0011). */
+  briefPath?: string;
 }
 
 /** Снимок SessionMeta в той форме, что лежит на диске. */
@@ -168,9 +169,16 @@ export class RunArtifacts {
     return JSON.parse(fs.readFileSync(filePath, 'utf8')) as RunMetaSnapshot;
   }
 
-  /** Содержимое `brief.md`. Brief лежит в корне рана (один на ран). */
+  /**
+   * Содержимое `brief.md` рана. Хранится в общей kb
+   * (`.agents/knowledge/product/briefs/...` после #0011); путь лежит в
+   * `meta.briefPath` (workspace-relative). Undefined — брифа ещё нет
+   * (роль не финализировала ран) или мета отсутствует.
+   */
   get brief(): string | undefined {
-    const filePath = path.join(this.runDir, 'brief.md');
+    const briefPath = this.meta?.briefPath;
+    if (!briefPath) return undefined;
+    const filePath = path.join(this.workspacePath, briefPath);
     if (!fs.existsSync(filePath)) return undefined;
     return fs.readFileSync(filePath, 'utf8');
   }

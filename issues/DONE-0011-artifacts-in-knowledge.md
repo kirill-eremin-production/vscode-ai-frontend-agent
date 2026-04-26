@@ -1,9 +1,18 @@
 ---
 id: 0011
 title: Продуктовые артефакты в knowledge/, ран хранит только ссылки
-status: open
+status: done
 created: 2026-04-26
+completed: 2026-04-26
 ---
+
+## Outcome
+
+- `brief.md` пишется в общую kb: `.agents/knowledge/product/briefs/<runId>-<slug>.md` (slug из title рана, юникод-friendly, обрезан до 60 символов).
+- `RunMeta.briefPath` (workspace-relative) — единственный источник правды о расположении брифа. Читатели (UI через `runs.get`, e2e через `RunArtifacts.brief`) ходят через него.
+- `writeBrief(runId, title, content)` атомарно пишет файл и обновляет `meta.briefPath` за один вызов; возвращает обновлённую RunMeta для broadcast'а. `readBrief(runId)` читает мету → берёт путь → файл.
+- В `runs/<id>/` остался только диалог: `meta.json`, `sessions/<sid>/{meta.json, chat.jsonl, tools.jsonl, loop.json}`. Бриф из корня рана исчез.
+- `kb.write` для записи брифа не используется: запись делает сервис продакта в `finalizeRun` (один вызов, на боковом пути от модели). Это проще, чем гонять финальный текст модели через тул-вызов; sandbox kb всё равно общий.
 
 ## Context
 
