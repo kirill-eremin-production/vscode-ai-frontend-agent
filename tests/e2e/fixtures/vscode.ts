@@ -144,9 +144,25 @@ export async function launchVSCodeApp(
     },
     recordVideo: {
       dir: videoDir,
-      size: { width: 1280, height: 800 },
+      size: { width: 1366, height: 768 },
     },
     timeout: 30_000,
+  });
+
+  // Фиксированный размер окна для воспроизводимости e2e: layout
+  // (видимость SessionsPanel, перенос табов, размещение кубиков на
+  // канвасе) зависит от размера. 1366×768 — распространённый ноутбучный
+  // baseline, на котором UI обязан корректно работать.
+  //
+  // Через Electron API, а не через `--window-size`: VS Code на macOS
+  // игнорирует Chromium-флаг (его WindowsMainService восстанавливает
+  // окно сам). Дожидаемся первого окна, потом ресайз — это надёжно.
+  await app.firstWindow();
+  await app.evaluate(({ BrowserWindow }) => {
+    const win = BrowserWindow.getAllWindows()[0];
+    if (!win) return;
+    win.setSize(1366, 768);
+    win.setPosition(0, 0);
   });
 
   // Сохраняем пути в самой инстанции, чтобы фикстуры workspacePath

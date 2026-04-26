@@ -27,11 +27,48 @@ const VSCODE_VERSION = '1.96.4';
 
 const REPO_ROOT = path.resolve(__dirname, '..', '..');
 const CACHE_FILE = path.resolve(__dirname, '.vscode-executable-path');
+const SRC_DIR = path.resolve(REPO_ROOT, 'src');
+const BUILD_OUTPUTS = [
+  path.join(REPO_ROOT, 'out', 'extension', 'index.js'),
+  path.join(REPO_ROOT, 'out', 'webview', 'main.js'),
+  path.join(REPO_ROOT, 'out', 'webview', 'app.css'),
+];
+
+/**
+ * Нужна ли пересборка. Раньше была проверка «существует ли
+ * `out/extension/index.js`» — этого мало: после первой сборки бандл
+ * никогда не обновлялся, и тесты гоняли стейл-код пока кто-то вручную
+ * не дёрнет `npm run build`. Сейчас сравниваем mtime каждого bundle с
+ * самым свежим файлом под `src/`: если хоть один исходник новее самого
+ * старого выхода — собираем. Esbuild/tailwind делают всю работу за
+ * ~200мс, так что лишний прогон при пустых изменениях дёшев, но
+ * избежать его всё равно стоит на CI.
+ */
+function needsRebuild(): boolean {
+  if (!BUILD_OUTPUTS.every(fs.existsSync)) return true;
+  const oldestOutput = Math.min(...BUILD_OUTPUTS.map((p) => fs.statSync(p).mtimeMs));
+  return newestMtimeUnder(SRC_DIR) > oldestOutput;
+}
+
+function newestMtimeUnder(dir: string): number {
+  let newest = 0;
+  for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
+    const full = path.join(dir, entry.name);
+    if (entry.isDirectory()) {
+      const sub = newestMtimeUnder(full);
+      if (sub > newest) newest = sub;
+    } else if (entry.isFile()) {
+      const m = fs.statSync(full).mtimeMs;
+      if (m > newest) newest = m;
+    }
+  }
+  return newest;
+}
 
 export default async function globalSetup() {
   // 1) Сборка. Не запускаем `npm run build` через npm (npm ci добавляет
   //    лишние ~5 сек) — зовём tsc/esbuild через корневой скрипт.
-  if (!fs.existsSync(path.join(REPO_ROOT, 'out', 'extension', 'index.js'))) {
+  if (needsRebuild()) {
     console.log('[e2e setup] Сборка расширения...');
     execSync('npm run build', { cwd: REPO_ROOT, stdio: 'inherit' });
   }

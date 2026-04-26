@@ -12,6 +12,7 @@ import {
 import { formatRelativeTime } from '@shared/lib/time';
 import { layoutCanvas, type CanvasEdge, type CanvasLayout, type CanvasNode } from '../layout';
 import { ownerRoleOfActiveSession, selectActiveSessionForRole } from '../select-active-session';
+import { resolveCubeDrillSession } from '../drill-resolver';
 import { diffMetaForFlashes, type FlashKind } from '../flashes';
 
 /**
@@ -32,7 +33,7 @@ export interface RunCanvasProps {
   onSwitchToChat?: () => void;
   /**
    * Drill-in (#0026): открыть выбранную сессию на вкладке «Чат». RunCanvas
-   * сам решает, какую сессию передать (для кубика — selectActiveSessionForRole,
+   * сам решает, какую сессию передать (для кубика — owned-сессия роли,
    * для стрелки — bridgeSessionId), наружу уходит уже готовый sessionId.
    */
   onDrillIn?: (sessionId: string) => void;
@@ -303,26 +304,29 @@ function CanvasViewport(props: {
             onDrillIn={props.onDrillIn}
           />
         ))}
-        {layout.nodes.map((node) => (
-          <CanvasNodeView
-            key={node.id}
-            node={node}
-            activity={activityForNode(node, props.meta, props.tools)}
-            now={props.now}
-            onDrillIn={
-              props.onDrillIn
-                ? () => {
-                    // Кубик роли — открыть «её» актуальную сессию (живую, если
-                    // есть; иначе свежайшую). User-кубик в hybrid'е: открыть
-                    // bridge с user-участием (берём первую попавшуюся, у user
-                    // нет «своей» сессии).
-                    const sessionId = resolveCubeDrillSession(node.role, props.meta);
-                    if (sessionId) props.onDrillIn?.(sessionId);
-                  }
-                : undefined
-            }
-          />
-        ))}
+        {layout.nodes.map((node) => {
+          // Резолвим drill-сессию один раз в рендере: это и contract для
+          // e2e (через `data-canvas-drill-session` на cube), и одна и та же
+          // closure для onClick/onKeyDown — без расхождений между «что
+          // показывает атрибут» и «куда уйдёт клик».
+          const drillSessionId = props.onDrillIn
+            ? resolveCubeDrillSession(node.role, props.meta)
+            : undefined;
+          return (
+            <CanvasNodeView
+              key={node.id}
+              node={node}
+              activity={activityForNode(node, props.meta, props.tools)}
+              now={props.now}
+              drillSessionId={drillSessionId}
+              onDrillIn={
+                drillSessionId && props.onDrillIn
+                  ? () => props.onDrillIn?.(drillSessionId)
+                  : undefined
+              }
+            />
+          );
+        })}
       </svg>
       <CanvasZoomControls
         zoom={zoom}
@@ -338,6 +342,13 @@ interface CanvasNodeViewProps {
   node: CanvasNode;
   activity: RunActivity;
   now: Date;
+  /**
+   * Drill-in (#0026): id сессии, в которую уйдёт клик/Enter. Используется
+   * для `data-canvas-drill-session` — это контракт для e2e и
+   * диагностический атрибут: видно прямо в DOM, какая сессия откроется
+   * по клику, без необходимости лезть в runtime-state webview.
+   */
+  drillSessionId?: string;
   /** Drill-in (#0026): открыть сессию этой роли в чате. */
   onDrillIn?: () => void;
 }
@@ -356,7 +367,7 @@ interface CanvasNodeViewProps {
  *  - idle/done → нейтральный без декораций.
  */
 const CanvasNodeView = memo(function CanvasNodeView(props: CanvasNodeViewProps) {
-  const { node, activity, now, onDrillIn } = props;
+  const { node, activity, now, drillSessionId, onDrillIn } = props;
   const tone = toneForKind(activity.kind);
   const showSpinner = activity.kind === 'thinking' || activity.kind === 'tool';
   const relTime = node.lastActivityAt ? formatRelativeTime(node.lastActivityAt, now) : undefined;
@@ -364,6 +375,7 @@ const CanvasNodeView = memo(function CanvasNodeView(props: CanvasNodeViewProps) 
     <g
       data-canvas-role={node.role}
       data-canvas-activity={activity.kind}
+      data-canvas-drill-session={drillSessionId}
       transform={`translate(${node.x}, ${node.y})`}
       onMouseDown={(e) => e.stopPropagation()}
       onClick={onDrillIn}
@@ -619,29 +631,6 @@ function activityForNode(node: CanvasNode, meta: RunMeta, tools: ToolEvent[]): R
   }
 
   return describeRunActivity({ meta: { status: session.status }, tools, role: node.role });
-}
-
-/**
- * Drill-in (#0026) с кубика: какую сессию открыть в чате.
- *
- *  - Для агента — `selectActiveSessionForRole`: live > closed, среди
- *    candidate'ов берём свежайшую по `updatedAt`. Это совпадает с
- *    логикой live-индикатора (#0024), пользователь не удивится результату.
- *  - Для user-кубика (только в hybrid'е) — bridge с user-участником,
- *    свежайшая (там user реально «говорил»). Если такой нет — undefined,
- *    клик no-op (но в реальности hybrid-кубик появляется только когда
- *    bridge с user уже существует).
- */
-function resolveCubeDrillSession(role: Role, meta: RunMeta): string | undefined {
-  if (role === 'user') {
-    const bridges = (meta.sessions ?? [])
-      .filter(
-        (s) => s.kind === 'agent-agent' && (s.participants ?? []).some((p) => p.kind === 'user')
-      )
-      .sort((a, b) => (a.updatedAt < b.updatedAt ? 1 : -1));
-    return bridges[0]?.id;
-  }
-  return selectActiveSessionForRole(meta, role)?.id;
 }
 
 function idleArtifactLabel(role: Role, meta: RunMeta): string {
