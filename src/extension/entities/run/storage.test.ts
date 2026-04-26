@@ -10,8 +10,10 @@ import {
   findPendingAsk,
   getKnowledgeRoot,
   initRunDir,
+  pullIntoRoom,
   readMeta,
   readSessionMeta,
+  readToolEvents,
   resolveKnowledgePath,
   setActiveSession,
   writeLoopConfig,
@@ -763,6 +765,103 @@ describe('findPendingAsk', () => {
     const pending = await findPendingAsk(runId);
     expect(pending?.toolCallId).toBe('call_x');
     expect(pending?.question).toBe('(пустой вопрос)');
+  });
+});
+
+/**
+ * #0036: pullIntoRoom — добавление роли в сессию-комнату.
+ *
+ * Покрытие:
+ *  - реальное добавление: участник появляется в `participants`, в
+ *    `tools.jsonl` пишется системное событие `participant_joined`;
+ *  - идемпотентность: повторный вызов с уже присутствующей ролью
+ *    возвращает undefined и не пишет дублирующего события;
+ *  - read-back: запись в журнале сессии корректно читается через
+ *    `readToolEvents` (формат, поля, порядок).
+ */
+describe('pullIntoRoom (#0036)', () => {
+  it('добавляет новую роль: participants обновился, событие записано', async () => {
+    const runId = freshRunId();
+    const initial = await initTestRun(runId);
+    const sessionId = initial.activeSessionId;
+
+    const updated = await pullIntoRoom(runId, sessionId, 'architect');
+    expect(updated).toBeDefined();
+
+    // participants пополнился ровно одним новым агентом-архитектором.
+    const session = await readSessionMeta(runId, sessionId);
+    expect(session?.participants).toEqual([
+      { kind: 'user' },
+      { kind: 'agent', role: 'product' },
+      { kind: 'agent', role: 'architect' },
+    ]);
+
+    // В run-meta summary тоже отражает новый состав — UI получает
+    // согласованный snapshot без дополнительного readSessionMeta.
+    const summary = updated?.sessions.find((s) => s.id === sessionId);
+    expect(summary?.participants).toEqual([
+      { kind: 'user' },
+      { kind: 'agent', role: 'product' },
+      { kind: 'agent', role: 'architect' },
+    ]);
+
+    // Системное событие присутствует и несёт ровно ту роль, которую
+    // добавили; формат — { kind, at, role } с ISO-таймстампом.
+    const events = await readToolEvents(runId, sessionId);
+    const joined = events.filter(
+      (event): event is Extract<ToolEvent, { kind: 'participant_joined' }> =>
+        event.kind === 'participant_joined'
+    );
+    expect(joined).toHaveLength(1);
+    expect(joined[0].role).toBe('architect');
+    // ISO-формат: ровно то, что вернёт `new Date().toISOString()`.
+    expect(joined[0].at).toMatch(/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}/);
+  });
+
+  it('повторный вызов с той же ролью — no-op, событие не дублируется', async () => {
+    const runId = freshRunId();
+    const initial = await initTestRun(runId);
+    const sessionId = initial.activeSessionId;
+
+    const first = await pullIntoRoom(runId, sessionId, 'architect');
+    expect(first).toBeDefined();
+
+    // Второй раз с той же ролью: идемпотентно — undefined, ничего нового.
+    const second = await pullIntoRoom(runId, sessionId, 'architect');
+    expect(second).toBeUndefined();
+
+    // На диске не появилось второй копии события и второго участника.
+    const session = await readSessionMeta(runId, sessionId);
+    const architects = session?.participants.filter(
+      (participant) => participant.kind === 'agent' && participant.role === 'architect'
+    );
+    expect(architects).toHaveLength(1);
+
+    const events = await readToolEvents(runId, sessionId);
+    const joined = events.filter((event) => event.kind === 'participant_joined');
+    expect(joined).toHaveLength(1);
+  });
+
+  it('запись в журнал сессии корректна и читается обратно', async () => {
+    // Полный round-trip: pullIntoRoom → readToolEvents возвращает событие
+    // в правильном discriminated-union shape, без потери полей. Это страхует
+    // от случайной поломки сериализации (например, если кто-то добавит
+    // shouldn't-serialize поле в ToolEvent).
+    const runId = freshRunId();
+    const initial = await initTestRun(runId);
+    const sessionId = initial.activeSessionId;
+
+    await pullIntoRoom(runId, sessionId, 'programmer');
+    const events = await readToolEvents(runId, sessionId);
+
+    const last = events[events.length - 1];
+    expect(last.kind).toBe('participant_joined');
+    if (last.kind !== 'participant_joined') throw new Error('unreachable');
+    expect(last.role).toBe('programmer');
+    expect(typeof last.at).toBe('string');
+    // Дополнительных полей в записи нет — лента видит ровно описанный
+    // в типе shape, без assistant-усов или tool_call_id.
+    expect(Object.keys(last).sort()).toEqual(['at', 'kind', 'role']);
   });
 });
 

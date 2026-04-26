@@ -402,6 +402,11 @@ function buildTimeline(chat: ChatMessage[], tools: ToolEvent[]): TimelineItem[] 
       return;
     }
     if (event.kind === 'tool_result') return; // склеен в pair с call'ом ниже
+    // participant_joined (#0036) — системная запись о вступлении роли в
+    // комнату. Рендер в журнале встреч (#0046) появится отдельной задачей;
+    // здесь пока просто скрываем, чтобы лента чата не шумела «Архитектор
+    // присоединился» прямо рядом с обычными сообщениями.
+    if (event.kind === 'participant_joined') return;
     // assistant
     if (!event.tool_calls || event.tool_calls.length === 0) {
       if (event.usage) {
