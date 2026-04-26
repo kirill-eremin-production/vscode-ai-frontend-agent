@@ -1,7 +1,7 @@
 ---
 id: 0042
 title: Canvas — заменить flow-layout на hierarchy-layout
-status: open
+status: done
 created: 2026-04-26
 ---
 
@@ -31,3 +31,10 @@ created: 2026-04-26
 - Подзадача #0028.
 - Зависит от: #0033.
 - Блокирует: #0043, #0044, #0045.
+
+## Outcome
+
+- Canvas стал org-chart'ом: [src/webview/features/canvas/layout.ts](../src/webview/features/canvas/layout.ts) полностью переписан на hierarchy-layout, edge-модель и анимации удалены, `flashes.ts/.test.ts` снесены вместе с edge-flash CSS в [src/webview/app/app.css](../src/webview/app/app.css).
+- Иерархия ролей вынесена в [src/webview/features/canvas/hierarchy.ts](../src/webview/features/canvas/hierarchy.ts) (локальная webview-копия `HIERARCHY/levelOf` — синхронизация с extension-копией поддерживается комментарием).
+- [src/webview/features/canvas/ui/RunCanvas.tsx](../src/webview/features/canvas/ui/RunCanvas.tsx) рисует тонкие статичные линии-«репортинги» через `CanvasReportingLineView`; drill-in по кубику и `data-canvas-drill-session` сохранены, добавлен `data-canvas-level`.
+- US-42 в [tests/user-stories.md](../tests/user-stories.md), ручной TC-49 в [tests/e2e/specs/tc-49-canvas-hierarchy-layout.md](../tests/e2e/specs/tc-49-canvas-hierarchy-layout.md). Старые TC-35/36/38 (handoff-стрелки и flash-анимация) остаются неактуальными — будут переработаны в #0045. Коммиты: f4aa783 (impl), review/done — этот.

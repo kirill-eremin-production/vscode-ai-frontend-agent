@@ -260,8 +260,10 @@ function rememberLastViewedSession(runId: string, sessionId: string): void {
 /**
  * Drill-in с канваса (#0026): открыть конкретную сессию рана в чат-вкладке.
  * Атомарно: запоминает сессию как «последнюю просмотренную», переключает
- * вкладку на 'chat' и выбирает сессию. Используется кликом по кубику
- * (sessionId = selectActiveSessionForRole) или стрелке (bridgeSessionId).
+ * вкладку на 'chat' и выбирает сессию. С #0042 единственный источник
+ * drill'а — клик по кубику (sessionId = `resolveCubeDrillSession`):
+ * стрелки коммуникации убраны вместе с edge-моделью, drill по edge'ам
+ * больше не существует.
  */
 export function drillIntoSession(runId: string, sessionId: string): void {
   rememberLastViewedSession(runId, sessionId);
