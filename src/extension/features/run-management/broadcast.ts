@@ -62,7 +62,14 @@ export function broadcast(message: ExtensionToWebviewMessage): void {
  * `appendToolEvent`. Storage остаётся чистым от знания о webview
  * (его можно дёргать из тестов и CLI без broadcast-побочки).
  */
-export async function recordToolEvent(runId: string, event: ToolEvent): Promise<void> {
-  await appendToolEvent(runId, event);
-  broadcast({ type: 'runs.tool.appended', runId, event });
+export async function recordToolEvent(
+  runId: string,
+  event: ToolEvent,
+  sessionId?: string
+): Promise<void> {
+  // appendToolEvent возвращает фактический sessionId (свой если передан,
+  // иначе — активный из RunMeta). Берём его в broadcast, чтобы webview
+  // мог отфильтровать live-приращение по выбранной в UI сессии (#0012).
+  const sid = await appendToolEvent(runId, event, sessionId);
+  broadcast({ type: 'runs.tool.appended', runId, sessionId: sid, event });
 }

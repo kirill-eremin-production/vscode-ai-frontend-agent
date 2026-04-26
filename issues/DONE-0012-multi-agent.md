@@ -1,9 +1,22 @@
 ---
 id: 0012
 title: Мульти-агентский режим (agent-agent сессии и дерево сессий)
-status: open
+status: done
 created: 2026-04-26
+completed: 2026-04-26
 ---
+
+## Outcome
+
+- `SessionKind` уже включал `agent-agent` (#0008), `Participant`-структура — тоже. Остался только мост.
+- Handoff `runProduct → runArchitect` теперь создаёт **новую сессию** `kind: 'agent-agent'`, `participants: [agent:product, agent:architect]`, `parentSessionId` = продактовая сессия. Активной становится bridge — туда уходит весь дальнейший вывод архитектора. См. [product-role/run.ts](../src/extension/features/product-role/run.ts) (success-ветка `finalizeRun`). Бриф-превью кладётся первым сообщением bridge от `agent:product` — сидит её как «вот с чем продакт передал работу».
+- Архитектор сам по себе не правился — все его append'ы идут через `meta.activeSessionId`, который теперь bridge.
+- Hybrid: первое user-сообщение в любой сессии добавляет `{kind:'user'}` в её `participants` через новый storage-helper [`addParticipant`](../src/extension/entities/run/storage.ts) (идемпотентно, изменения broadcast'ятся `runs.updated`). Логика — в [wire.ts:ensureUserParticipant](../src/extension/features/run-management/wire.ts) на обоих путях user-input (continue + finalize).
+- Дерево сессий в UI ([RunDetails.tsx](../src/webview/features/run-list/ui/RunDetails.tsx)): `SessionTabs` строится из `parentSessionId` через `buildSessionTree` (рекурсивно) и рендерится отступом по глубине. Корни сортируются по `createdAt`. Bridge помечается «🤝 Передача», ● маркирует живую сессию.
+- Composer: в активной (живой) сессии работает как раньше (continue/answer/finalize). В неактивной (просмотр истории через клик по табу) — read-only с подсказкой «вернитесь в активную сессию, чтобы продолжить».
+- Per-session sessionId в broadcast'ах: `runs.message.appended` и `runs.tool.appended` теперь несут `sessionId`. `appendChatMessage`/`appendToolEvent` возвращают фактический sessionId, callers передают его в broadcast. Webview store фильтрует live-приращения: применяются только для просматриваемой сессии (явный selectedSessionId или активная при follow-mode), чужие — игнорируются. При смене активной сессии в follow-mode (handoff) автоматически вызывается `runs.get` для нового активного.
+- IPC `runs.get` принимает опциональный `sessionId`; ответ эхо-возвращает реально прочитанную сессию. `getRunDetails` параметризован, чтобы UI клика по неактивному табу мог получать его историю без переключения активной.
+- E2E: TC-31 расширен под bridge-сессию (две сессии в meta, `parentSessionId`, разделение чата по сессиям, tool-события считаются по обеим сессиям). Новый [TC-32 (`tc-32-multi-agent-hybrid.spec.ts`)](../tests/e2e/specs/tc-32-multi-agent-hybrid.spec.ts) — happy-path hybrid: продакт → handoff → архитектор → user-followup в bridge → continue-цикл архитектора → `plan_v2` → проверка `participants += user`, чужая сессия не получила user-сообщение.
 
 ## Context
 

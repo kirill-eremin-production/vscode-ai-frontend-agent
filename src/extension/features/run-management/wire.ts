@@ -3,6 +3,7 @@ import * as crypto from 'node:crypto';
 import * as vscode from 'vscode';
 import { createRun, getRunDetails, listRuns } from '@ext/entities/run/service';
 import {
+  addParticipant,
   appendChatMessage,
   findPendingAsk,
   readBrief,
@@ -95,11 +96,13 @@ export function wireRunMessages(
           return;
         }
         case 'runs.get': {
-          const details = await getRunDetails(msg.id);
+          const details = await getRunDetails(msg.id, msg.sessionId);
           // pendingAsk актуален только для ранов в awaiting_user_input.
           // В других статусах не читаем tools.jsonl впустую (детали
           // там есть в `details.tools`, но конкретный pending-вопрос —
-          // это отдельная семантика «над чем висит ран»).
+          // это отдельная семантика «над чем висит ран»). После #0012
+          // pending живёт в активной сессии — даже если UI просматривает
+          // другую, баннер показываем по активной.
           const pendingAsk =
             details?.meta.status === 'awaiting_user_input'
               ? await findPendingAsk(msg.id)
@@ -116,6 +119,7 @@ export function wireRunMessages(
           send({
             type: 'runs.get.result',
             id: msg.id,
+            sessionId: details?.sessionId,
             meta: details?.meta,
             chat: details?.chat,
             tools: details?.tools,
@@ -216,8 +220,14 @@ async function handleUserMessage(
       at: new Date().toISOString(),
       text: PRODUCT_FINALIZE_USER_TEXT,
     };
-    await appendChatMessage(runId, userMessage);
-    broadcast({ type: 'runs.message.appended', runId, message: userMessage });
+    const finalizeSessionId = await appendChatMessage(runId, userMessage);
+    await ensureUserParticipant(runId, finalizeSessionId);
+    broadcast({
+      type: 'runs.message.appended',
+      runId,
+      sessionId: finalizeSessionId,
+      message: userMessage,
+    });
 
     // 2. Маркер уходит в pending как ответ на ask_user. Дальше — обычный
     //    путь: in-memory pending → resolvePendingAsk; если процесс
@@ -276,8 +286,14 @@ async function handleUserMessage(
       at: new Date().toISOString(),
       text: trimmed,
     };
-    await appendChatMessage(runId, chatMessage);
-    broadcast({ type: 'runs.message.appended', runId, message: chatMessage });
+    const continueSessionId = await appendChatMessage(runId, chatMessage);
+    await ensureUserParticipant(runId, continueSessionId);
+    broadcast({
+      type: 'runs.message.appended',
+      runId,
+      sessionId: continueSessionId,
+      message: chatMessage,
+    });
 
     await resumeRun({
       context,
@@ -291,6 +307,26 @@ async function handleUserMessage(
   throw new Error(
     `Нельзя отправить сообщение, пока ран в статусе "${meta.status}". Дождитесь завершения шага агента.`
   );
+}
+
+/**
+ * Гарантировать, что пользователь числится участником сессии (#0012).
+ * После первого user-сообщения в agent-agent сессии она становится
+ * hybrid: `participants` дополняется `{kind:'user'}`, в meta.json это
+ * отражено, UI получает `runs.updated` и может перерисовать badge таба.
+ *
+ * Идемпотентно: для user-agent сессий, где user уже в participants,
+ * не делает ничего. Не бросает на отсутствии сессии — это деградирует
+ * до «не пометили hybrid», но не валит обработку сообщения.
+ */
+async function ensureUserParticipant(runId: string, sessionId: string): Promise<void> {
+  try {
+    const updated = await addParticipant(runId, sessionId, { kind: 'user' });
+    if (updated) broadcast({ type: 'runs.updated', meta: updated });
+  } catch {
+    // sessionId всегда валиден (только что в неё писали), но на всякий
+    // случай не даём упасть всему обработчику сообщения.
+  }
 }
 
 /**

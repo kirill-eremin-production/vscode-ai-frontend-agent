@@ -126,8 +126,8 @@ async function finalizeRun(
       at: new Date().toISOString(),
       text: outcome.finalContent,
     };
-    await appendChatMessage(runId, message);
-    broadcast({ type: 'runs.message.appended', runId, message });
+    const sessionId = await appendChatMessage(runId, message);
+    broadcast({ type: 'runs.message.appended', runId, sessionId, message });
     const updated = await updateRunStatus(runId, 'awaiting_human');
     if (updated) broadcast({ type: 'runs.updated', meta: updated });
     void vscode.window.showInformationMessage(
@@ -140,8 +140,8 @@ async function finalizeRun(
       at: new Date().toISOString(),
       text: `Smoke failed: ${outcome.reason}`,
     };
-    await appendChatMessage(runId, message);
-    broadcast({ type: 'runs.message.appended', runId, message });
+    const sessionId = await appendChatMessage(runId, message);
+    broadcast({ type: 'runs.message.appended', runId, sessionId, message });
     const updated = await updateRunStatus(runId, 'failed');
     if (updated) broadcast({ type: 'runs.updated', meta: updated });
     void vscode.window.showErrorMessage(`Smoke failed: ${outcome.reason}`);

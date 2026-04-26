@@ -1,5 +1,11 @@
 import { useMemo, useState } from 'react';
-import { openFile, sendFinalizeSignal, sendUserMessage, useRunsState } from '@shared/runs/store';
+import {
+  openFile,
+  selectSession,
+  sendFinalizeSignal,
+  sendUserMessage,
+  useRunsState,
+} from '@shared/runs/store';
 import type {
   ChatMessage,
   RunMeta,
@@ -26,7 +32,14 @@ import { contextLimitFor, zoneFor } from '@shared/runs/pricing';
  *  - постоянный {@link Composer} для отправки сообщений.
  */
 export function RunDetails() {
-  const { selectedId, selectedDetails, pendingAsk, selectedBrief, selectedPlan } = useRunsState();
+  const {
+    selectedId,
+    selectedSessionId,
+    selectedDetails,
+    pendingAsk,
+    selectedBrief,
+    selectedPlan,
+  } = useRunsState();
 
   if (!selectedId) {
     return <div className="run-details run-details--empty">Выберите ран слева.</div>;
@@ -36,6 +49,10 @@ export function RunDetails() {
   }
 
   const { meta, chat, tools } = selectedDetails;
+  // viewedSessionId = что сейчас реально показано в ленте. Undefined в
+  // store ⇒ «follow active», т.е. показываем активную сессию рана.
+  const viewedSessionId = selectedSessionId ?? meta.activeSessionId;
+  const isViewingActive = viewedSessionId === meta.activeSessionId;
 
   return (
     <div className="run-details">
@@ -48,7 +65,12 @@ export function RunDetails() {
         <h3>Запрос</h3>
         <pre>{meta.prompt}</pre>
       </section>
-      <SessionTabs sessions={meta.sessions} activeSessionId={meta.activeSessionId} />
+      <SessionTabs
+        runId={meta.id}
+        sessions={meta.sessions}
+        activeSessionId={meta.activeSessionId}
+        viewedSessionId={viewedSessionId}
+      />
       {pendingAsk && <AskUserBanner question={pendingAsk.question} context={pendingAsk.context} />}
       {selectedBrief && (
         <section className="run-details__brief">
@@ -63,7 +85,12 @@ export function RunDetails() {
         </section>
       )}
       <Timeline chat={chat} tools={tools} />
-      <Composer runId={meta.id} status={meta.status} hasPendingAsk={pendingAsk !== undefined} />
+      <Composer
+        runId={meta.id}
+        status={meta.status}
+        hasPendingAsk={pendingAsk !== undefined}
+        isViewingActive={isViewingActive}
+      />
     </div>
   );
 }
@@ -139,39 +166,137 @@ function RunUsageHeader(props: { meta: RunMeta }) {
 }
 
 /**
- * Полоска вкладок сессий рана. На Phase 1 (#0008) сессий всегда одна
- * («Session 1»), но компонент уже отрисовывает строку вкладок —
- * чтобы #0013 (компактификация) сразу же показывал старую и новую
- * сессии без правки markup.
+ * Дерево вкладок сессий рана (#0012). Корни — сессии без `parentSessionId`
+ * (изначальная user↔agent), дети — agent↔agent сессии-мосты, рождённые
+ * handoff'ом. Глубина обычно 1 (root → bridge), но компонент рекурсивный
+ * — добавление третьей роли (программист) не потребует правок.
  *
- * Кликабельность отключена для всех вкладок, кроме активной — переход
- * между сессиями требует поддержки read-only ленты, что сделаем
- * следующим тикетом.
+ * Подсветка:
+ *  - `--active` маркирует **просматриваемую** сессию;
+ *  - ● отдельным значком показывает живую сессию (`activeSessionId`) —
+ *    туда уйдёт следующий ввод пользователя через composer.
  */
-function SessionTabs(props: { sessions: SessionSummary[]; activeSessionId: string }) {
+function SessionTabs(props: {
+  runId: string;
+  sessions: SessionSummary[];
+  activeSessionId: string;
+  viewedSessionId: string;
+}) {
+  const tree = useMemo(() => buildSessionTree(props.sessions), [props.sessions]);
   if (props.sessions.length === 0) return null;
   return (
     <nav className="run-details__sessions" aria-label="Сессии рана">
-      {props.sessions.map((session, index) => {
-        const isActive = session.id === props.activeSessionId;
-        const label = `Session ${index + 1}`;
-        return (
-          <button
-            key={session.id}
-            type="button"
-            className={`run-details__session-tab${isActive ? ' run-details__session-tab--active' : ''}`}
-            disabled={!isActive}
-            title={`${label} · статус ${session.status} · ${formatTokens(session.usage.inputTokens + session.usage.outputTokens)} токенов`}
-          >
-            {label}
-            {session.status === 'compacted' && (
-              <span className="run-details__session-badge"> compacted</span>
-            )}
-          </button>
-        );
-      })}
+      <SessionTreeLevel
+        nodes={tree}
+        depth={0}
+        runId={props.runId}
+        activeSessionId={props.activeSessionId}
+        viewedSessionId={props.viewedSessionId}
+      />
     </nav>
   );
+}
+
+interface SessionNode {
+  session: SessionSummary;
+  /** Сквозной индекс по всем сессиям рана — для дефолтного label «Session N». */
+  index: number;
+  children: SessionNode[];
+}
+
+/**
+ * Собрать lookup parent → children. Сироты (parentSessionId, чьего родителя
+ * нет в списке) поднимаются в корень — иначе невидимыми останутся.
+ * Сортируем братьев и сестёр по `createdAt`: время — единственный
+ * естественный порядок «как разворачивались события рана».
+ */
+function buildSessionTree(sessions: SessionSummary[]): SessionNode[] {
+  const indexById = new Map<string, number>();
+  sessions.forEach((s, i) => indexById.set(s.id, i));
+  const nodes: SessionNode[] = sessions.map((session, index) => ({
+    session,
+    index,
+    children: [],
+  }));
+  const nodeById = new Map<string, SessionNode>();
+  for (const node of nodes) nodeById.set(node.session.id, node);
+  const roots: SessionNode[] = [];
+  for (const node of nodes) {
+    const parentId = node.session.parentSessionId;
+    const parent = parentId ? nodeById.get(parentId) : undefined;
+    if (parent) parent.children.push(node);
+    else roots.push(node);
+  }
+  const sortByCreated = (a: SessionNode, b: SessionNode) =>
+    a.session.createdAt.localeCompare(b.session.createdAt);
+  roots.sort(sortByCreated);
+  for (const node of nodes) node.children.sort(sortByCreated);
+  return roots;
+}
+
+function SessionTreeLevel(props: {
+  nodes: SessionNode[];
+  depth: number;
+  runId: string;
+  activeSessionId: string;
+  viewedSessionId: string;
+}) {
+  return (
+    <ul
+      className="run-details__session-tree"
+      style={{
+        listStyle: 'none',
+        margin: 0,
+        paddingLeft: props.depth === 0 ? 0 : 16,
+      }}
+    >
+      {props.nodes.map((node) => {
+        const isViewed = node.session.id === props.viewedSessionId;
+        const isLive = node.session.id === props.activeSessionId;
+        const label = sessionLabel(node.session, node.index);
+        return (
+          <li key={node.session.id} style={{ margin: '2px 0' }}>
+            <button
+              type="button"
+              className={`run-details__session-tab${isViewed ? ' run-details__session-tab--active' : ''}`}
+              onClick={() => selectSession(props.runId, node.session.id)}
+              title={`${label} · статус ${node.session.status}${isLive ? ' · активная' : ''} · ${formatTokens(node.session.usage.inputTokens + node.session.usage.outputTokens)} токенов`}
+            >
+              {props.depth > 0 && <span aria-hidden="true">↳ </span>}
+              {label}
+              {isLive && <span className="run-details__session-badge"> ●</span>}
+              {node.session.status === 'compacted' && (
+                <span className="run-details__session-badge"> compacted</span>
+              )}
+            </button>
+            {node.children.length > 0 && (
+              <SessionTreeLevel
+                nodes={node.children}
+                depth={props.depth + 1}
+                runId={props.runId}
+                activeSessionId={props.activeSessionId}
+                viewedSessionId={props.viewedSessionId}
+              />
+            )}
+          </li>
+        );
+      })}
+    </ul>
+  );
+}
+
+/**
+ * Имя таба сессии — короткая подсказка о её роли. По `kind`:
+ *  - user-agent → «Чат N» (initial — обычно с продактом);
+ *  - agent-agent → «🤝 Передача» (мост между агентами, после handoff'а).
+ * Имя конкретной роли не показываем: webview не знает констант ролей,
+ * не хочется дублировать. Hybrid (после user-intervention) сейчас
+ * визуально не отличается — делается отдельным badge'ом ниже, по
+ * participants, если когда-нибудь захочется.
+ */
+function sessionLabel(session: SessionSummary, index: number): string {
+  if (session.kind === 'agent-agent') return `🤝 Передача`;
+  return `Чат ${index + 1}`;
 }
 
 /**
@@ -200,10 +325,32 @@ function AskUserBanner(props: { question: string; context?: string }) {
  * Видим во всех статусах, кроме `draft`. Send активен только когда
  * extension реально может принять сообщение.
  */
-function Composer(props: { runId: string; status: RunStatus; hasPendingAsk: boolean }) {
+function Composer(props: {
+  runId: string;
+  status: RunStatus;
+  hasPendingAsk: boolean;
+  /**
+   * Просматривается ли сейчас активная (живая) сессия рана. После #0012
+   * пользователь может кликнуть таб неактивной сессии — тогда composer
+   * read-only: отправлять сообщения в read-only сессию пока не умеем
+   * (это будет в #0014/«1-on-1 c артефактом»). UI показывает подсказку,
+   * чтобы вернуться в активную.
+   */
+  isViewingActive: boolean;
+}) {
   const [draft, setDraft] = useState('');
 
   if (props.status === 'draft') return null;
+
+  if (!props.isViewingActive) {
+    return (
+      <section className="run-details__composer">
+        <p className="run-details__composer-hint">
+          Эта сессия — read-only. Чтобы продолжить диалог, вернитесь в активную сессию.
+        </p>
+      </section>
+    );
+  }
 
   const sendable =
     props.status === 'awaiting_user_input' ||

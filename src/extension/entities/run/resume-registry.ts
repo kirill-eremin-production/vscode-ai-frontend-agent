@@ -124,6 +124,6 @@ async function markUnresumable(runId: string, reason: string): Promise<void> {
     at: new Date().toISOString(),
     text: message,
   };
-  await appendChatMessage(runId, chatMessage);
-  broadcast({ type: 'runs.message.appended', runId, message: chatMessage });
+  const sessionId = await appendChatMessage(runId, chatMessage);
+  broadcast({ type: 'runs.message.appended', runId, sessionId, message: chatMessage });
 }

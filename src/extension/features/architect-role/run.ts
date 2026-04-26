@@ -69,8 +69,8 @@ async function appendArchitectChatMessage(runId: string, text: string): Promise<
     at: new Date().toISOString(),
     text,
   };
-  await appendChatMessage(runId, message);
-  broadcast({ type: 'runs.message.appended', runId, message });
+  const sessionId = await appendChatMessage(runId, message);
+  broadcast({ type: 'runs.message.appended', runId, sessionId, message });
 }
 
 /** Системное сообщение в чат — для диагностики фейлов. */
@@ -81,8 +81,8 @@ async function appendSystemChatMessage(runId: string, text: string): Promise<voi
     at: new Date().toISOString(),
     text,
   };
-  await appendChatMessage(runId, message);
-  broadcast({ type: 'runs.message.appended', runId, message });
+  const sessionId = await appendChatMessage(runId, message);
+  broadcast({ type: 'runs.message.appended', runId, sessionId, message });
 }
 
 /**

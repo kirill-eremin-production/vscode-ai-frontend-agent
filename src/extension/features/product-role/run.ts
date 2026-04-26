@@ -10,6 +10,7 @@ import {
 } from '@ext/shared/agent-loop';
 import {
   appendChatMessage,
+  createSession,
   readMeta,
   updateRunStatus,
   writeBrief,
@@ -19,6 +20,7 @@ import { broadcast } from '@ext/features/run-management/broadcast';
 import { registerRoleResumer } from '@ext/entities/run/resume-registry';
 import { PRODUCT_MODEL, PRODUCT_ROLE } from '@ext/entities/run/roles/product';
 import { buildProductSystemPrompt } from '@ext/entities/run/roles/product.prompt';
+import { ARCHITECT_ROLE } from '@ext/entities/run/roles/architect';
 import { runArchitect } from '@ext/features/architect-role';
 import { buildRoleScopedKbTools } from './role-kb-tools';
 
@@ -73,8 +75,8 @@ async function appendProductChatMessage(runId: string, text: string): Promise<vo
     at: new Date().toISOString(),
     text,
   };
-  await appendChatMessage(runId, message);
-  broadcast({ type: 'runs.message.appended', runId, message });
+  const sessionId = await appendChatMessage(runId, message);
+  broadcast({ type: 'runs.message.appended', runId, sessionId, message });
 }
 
 /** Системное сообщение в чат — для диагностики фейлов и т.п. */
@@ -85,8 +87,8 @@ async function appendSystemChatMessage(runId: string, text: string): Promise<voi
     at: new Date().toISOString(),
     text,
   };
-  await appendChatMessage(runId, message);
-  broadcast({ type: 'runs.message.appended', runId, message });
+  const sessionId = await appendChatMessage(runId, message);
+  broadcast({ type: 'runs.message.appended', runId, sessionId, message });
 }
 
 /**
@@ -121,28 +123,80 @@ async function finalizeRun(runId: string, apiKey: string, outcome: AgentLoopResu
     const meta = await readMeta(runId);
     await writeBrief(runId, meta?.title ?? 'untitled', brief);
     const preview = brief.length > 600 ? `${brief.slice(0, 600)}…` : brief;
+    // Превью продакта пишем в его (= текущую активную) сессию ДО
+    // создания bridge-сессии. После createSession ниже активной станет
+    // bridge — тогда appendChatMessage без явного sessionId уйдёт уже
+    // в неё. Это ключевой инвариант Phase A #0012: каждая роль живёт
+    // в своей сессии-канале.
     await appendProductChatMessage(runId, preview);
-    const updated = await updateRunStatus(runId, 'awaiting_human');
-    if (updated) broadcast({ type: 'runs.updated', meta: updated });
+    const productDone = await updateRunStatus(runId, 'awaiting_human');
+    if (productDone) broadcast({ type: 'runs.updated', meta: productDone });
 
-    // Issue #0004: автоматически передаём ран архитектору. Без явного
-    // approve пользователя на этой итерации — кнопки approve/reject
-    // между ролями описаны как отдельная будущая задача. Fire-and-forget:
-    // runArchitect сам управляет статусом (running → awaiting_human),
-    // прогресс пойдёт в webview через broadcast. Любые исключения
-    // ловятся внутри runArchitect и превращаются в `failed`; здесь —
-    // подстраховочный catch на случай совсем экзотического сбоя.
-    //
+    // Issue #0004 + #0012 (Фаза A): автоматический handoff к архитектору.
     // Опт-аут через env-переменную нужен e2e-фикстуре: продактовые TC
     // (TC-17..21) проверяют именно продактовый шаг и не должны
     // спотыкаться об архитекторский запрос к OpenRouter, для которого
     // в их сценарии нет ответа. Прод этой переменной не задаёт —
-    // авто-handoff всегда включён.
-    if (process.env.AI_FRONTEND_AGENT_AUTOSTART_ARCHITECT !== '0') {
-      void runArchitect({ runId, apiKey }).catch((err) => {
-        console.error('[runArchitect] непойманная ошибка:', err);
+    // handoff всегда включён.
+    if (process.env.AI_FRONTEND_AGENT_AUTOSTART_ARCHITECT === '0') return;
+
+    // Создаём bridge-сессию product↔architect. parentSessionId =
+    // продактовая сессия (sessions.length-1, она же activeSessionId до
+    // этого момента) — это формирует дерево сессий, которое UI #0012
+    // рендерит как иерархию. Семя bridge-сессии — превью брифа от
+    // имени продакта; полный текст brief'а архитектор получит как
+    // userMessage в loop через `loadBriefAsUserMessage` (источник
+    // истины — kb-файл, чтобы парсер не зависел от обрезанного превью
+    // в чате).
+    //
+    // status=running ставим явно: bridge-сессия становится активной
+    // прямо сейчас, поток работы переходит к архитектору. Без этого
+    // RunMeta.status переключился бы на 'draft' (дефолт createSession),
+    // и UI на долю секунды показал бы «черновик».
+    let bridgeSessionId: string | undefined;
+    try {
+      const productSessionId = productDone?.activeSessionId ?? meta?.activeSessionId;
+      const bridge = await createSession(runId, {
+        kind: 'agent-agent',
+        participants: [
+          { kind: 'agent', role: PRODUCT_ROLE },
+          { kind: 'agent', role: ARCHITECT_ROLE },
+        ],
+        parentSessionId: productSessionId,
+        status: 'running',
       });
+      bridgeSessionId = bridge.session.id;
+      broadcast({ type: 'runs.updated', meta: bridge.run });
+      // Семя — превью брифа от продакта. Это первое сообщение, которое
+      // пользователь увидит в bridge-канале, и оно задаёт контекст:
+      // «продакт передал работу архитектору, вот с чем».
+      const handoffMessage = {
+        id: crypto.randomBytes(6).toString('hex'),
+        from: `agent:${PRODUCT_ROLE}`,
+        at: new Date().toISOString(),
+        text: preview,
+      };
+      await appendChatMessage(runId, handoffMessage, bridgeSessionId);
+      broadcast({
+        type: 'runs.message.appended',
+        runId,
+        sessionId: bridgeSessionId,
+        message: handoffMessage,
+      });
+    } catch (err) {
+      console.error('[handoff] не удалось создать bridge-сессию:', err);
+      // Если не получилось завести bridge — fallback на старое поведение:
+      // запускаем архитектора в текущей (продактовой) сессии. Это хуже
+      // для UI (всё в одном чате), но ран не теряется.
     }
+
+    // Fire-and-forget. runArchitect сам управляет статусом (running →
+    // awaiting_human), прогресс пойдёт в webview через broadcast.
+    // Любые исключения внутри ловятся им же и превращаются в `failed`;
+    // здесь — подстраховочный catch на случай совсем экзотического сбоя.
+    void runArchitect({ runId, apiKey }).catch((err) => {
+      console.error('[runArchitect] непойманная ошибка:', err);
+    });
     return;
   }
 

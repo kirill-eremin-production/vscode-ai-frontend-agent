@@ -31,6 +31,12 @@ export interface RunsListRequest {
 export interface RunsGetRequest {
   type: 'runs.get';
   id: string;
+  /**
+   * Какую сессию читать. По умолчанию (undefined) — активную из RunMeta.
+   * UI передаёт явный id при клике по табу неактивной сессии (#0012):
+   * пользователь хочет посмотреть её историю, не переключая активную.
+   */
+  sessionId?: string;
 }
 
 /** Открыть input box и сохранить ключ OpenRouter в SecretStorage. */
@@ -114,6 +120,13 @@ export interface RunsListResult {
 export interface RunsGetResult {
   type: 'runs.get.result';
   id: string;
+  /**
+   * Id сессии, чьи chat/tools отданы. Эхо запроса (или активной сессии
+   * в RunMeta, если запрос был без sessionId). UI использует это, чтобы
+   * подсветить нужный таб и проигнорировать ответ, если пользователь
+   * успел кликнуть по другому табу.
+   */
+  sessionId?: string;
   meta?: RunMeta;
   chat?: ChatMessage[];
   /**
@@ -191,6 +204,13 @@ export interface RunsAskUserEvent {
 export interface RunsMessageAppendedEvent {
   type: 'runs.message.appended';
   runId: string;
+  /**
+   * В какую сессию рана дописали сообщение. После #0012 ран — это
+   * несколько сессий (продакт, bridge, в будущем — больше); webview
+   * фильтрует live-приращения по `selectedSessionId`, чтобы не
+   * подмешивать чужие сообщения в текущую ленту.
+   */
+  sessionId: string;
   message: ChatMessage;
 }
 
@@ -206,6 +226,8 @@ export interface RunsMessageAppendedEvent {
 export interface RunsToolAppendedEvent {
   type: 'runs.tool.appended';
   runId: string;
+  /** Сессия, в `tools.jsonl` которой добавлена запись. См. RunsMessageAppendedEvent. */
+  sessionId: string;
   event: ToolEvent;
 }
 

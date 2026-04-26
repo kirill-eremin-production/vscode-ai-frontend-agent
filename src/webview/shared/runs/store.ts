@@ -29,6 +29,14 @@ import type { ChatMessage, PendingAsk, RunMeta, ToolEvent } from './types';
 interface RunsState {
   runs: RunMeta[];
   selectedId: string | undefined;
+  /**
+   * Какую сессию рана сейчас просматривает пользователь. Undefined =
+   * «активная сессия из RunMeta» (дефолт при выборе рана). Меняется
+   * кликом по табу сессии в RunDetails. Если выбранная сессия совпала
+   * с `meta.activeSessionId` — composer и live-апдейты работают как
+   * раньше; если выбрали другую — карточка в read-only режиме (#0012).
+   */
+  selectedSessionId: string | undefined;
   selectedDetails: { meta: RunMeta; chat: ChatMessage[]; tools: ToolEvent[] } | undefined;
   pendingAsk: PendingAsk | undefined;
   pendingByRun: Record<string, PendingAsk>;
@@ -51,6 +59,7 @@ interface RunsState {
 const initialState: RunsState = {
   runs: [],
   selectedId: undefined,
+  selectedSessionId: undefined,
   selectedDetails: undefined,
   pendingAsk: undefined,
   pendingByRun: {},
@@ -94,7 +103,7 @@ function setState(updater: (prev: RunsState) => RunsState): void {
 type WebviewToExtensionMessage =
   | { type: 'runs.create'; prompt: string }
   | { type: 'runs.list' }
-  | { type: 'runs.get'; id: string }
+  | { type: 'runs.get'; id: string; sessionId?: string }
   | { type: 'runs.setApiKey' }
   | { type: 'runs.user.message'; runId: string; text: string; finalize?: boolean }
   | { type: 'editor.open'; path: string };
@@ -125,6 +134,10 @@ export function selectRun(id: string): void {
   setState((prev) => ({
     ...prev,
     selectedId: id,
+    // selectedSessionId сбрасываем на undefined — это означает «активная
+    // сессия по умолчанию». Конкретный id придёт в runs.get.result и
+    // запишется туда.
+    selectedSessionId: undefined,
     selectedDetails: undefined,
     // pendingAsk сразу подтягиваем из кэша, если уже знаем — снимет
     // мерцание «вопрос → нет вопроса → вопрос» при переключении.
@@ -135,6 +148,29 @@ export function selectRun(id: string): void {
     selectedPlan: undefined,
   }));
   send({ type: 'runs.get', id });
+}
+
+/**
+ * Переключиться на конкретную сессию выбранного рана. Используется при
+ * клике по табу сессии в RunDetails (#0012). Локально сбрасываем chat/
+ * tools, чтобы пользователь видел индикацию загрузки, а не остатки
+ * предыдущей сессии; реальные данные придут в `runs.get.result`.
+ *
+ * Если sessionId совпал с текущим — ничего не делаем, экономим round-trip.
+ */
+export function selectSession(runId: string, sessionId: string): void {
+  setState((prev) => {
+    if (prev.selectedId !== runId) return prev;
+    if (prev.selectedSessionId === sessionId) return prev;
+    return {
+      ...prev,
+      selectedSessionId: sessionId,
+      selectedDetails: prev.selectedDetails
+        ? { ...prev.selectedDetails, chat: [], tools: [] }
+        : prev.selectedDetails,
+    };
+  });
+  send({ type: 'runs.get', id: runId, sessionId });
 }
 
 /**
@@ -210,6 +246,7 @@ type ExtensionToWebviewMessage =
   | {
       type: 'runs.get.result';
       id: string;
+      sessionId?: string;
       meta?: RunMeta;
       chat?: ChatMessage[];
       tools?: ToolEvent[];
@@ -221,8 +258,8 @@ type ExtensionToWebviewMessage =
   | { type: 'runs.error'; message: string }
   | { type: 'runs.updated'; meta: RunMeta }
   | { type: 'runs.askUser'; runId: string; ask: PendingAsk }
-  | { type: 'runs.message.appended'; runId: string; message: ChatMessage }
-  | { type: 'runs.tool.appended'; runId: string; event: ToolEvent };
+  | { type: 'runs.message.appended'; runId: string; sessionId: string; message: ChatMessage }
+  | { type: 'runs.tool.appended'; runId: string; sessionId: string; event: ToolEvent };
 
 /**
  * Хук-подписчик, который должен быть установлен ровно один раз на
@@ -265,6 +302,17 @@ export function useRunsWiring(): void {
           // иначе старый медленный ответ перетрёт свежий выбор пользователя.
           setState((prev) => {
             if (prev.selectedId !== data.id) return prev;
+            // Если пользователь успел кликнуть по другому табу пока этот
+            // ответ ехал — игнорируем. selectedSessionId === undefined
+            // означает «активная по умолчанию», в этом случае принимаем
+            // любую сессию (фактически придёт активная).
+            if (
+              prev.selectedSessionId !== undefined &&
+              data.sessionId !== undefined &&
+              prev.selectedSessionId !== data.sessionId
+            ) {
+              return prev;
+            }
             if (!data.meta) {
               return {
                 ...prev,
@@ -276,6 +324,11 @@ export function useRunsWiring(): void {
             }
             return {
               ...prev,
+              // selectedSessionId не перезаписываем из ответа: undefined =
+              // «follow active», явный id ставится только при клике по
+              // табу (selectSession). Это нужно, чтобы handoff
+              // (active меняется с продактовой на bridge) автоматически
+              // переключал просмотр пользователя на новую сессию.
               selectedDetails: {
                 meta: data.meta,
                 chat: data.chat ?? [],
@@ -289,10 +342,26 @@ export function useRunsWiring(): void {
           return;
         }
         case 'runs.updated': {
+          // Если активная сессия рана сменилась (например, handoff
+          // продакт→архитектор создал bridge — #0012) И пользователь в
+          // follow-mode (selectedSessionId === undefined) — нужно
+          // перечитать chat/tools для новой активной сессии. Делаем
+          // ДО setState, чтобы запрос ушёл сразу; ответ перетрёт ленту
+          // через runs.get.result.
+          const prevSnapshot = state;
+          if (
+            prevSnapshot.selectedId === data.meta.id &&
+            prevSnapshot.selectedSessionId === undefined &&
+            prevSnapshot.selectedDetails &&
+            prevSnapshot.selectedDetails.meta.activeSessionId !== data.meta.activeSessionId
+          ) {
+            send({ type: 'runs.get', id: data.meta.id });
+          }
           setState((prev) => {
             const runs = prev.runs.map((run) => (run.id === data.meta.id ? data.meta : run));
             // Если меняется выбранный ран — обновляем и meta в деталях,
-            // chat/tools не трогаем (они догонятся отдельными сообщениями).
+            // chat/tools не трогаем (они догонятся отдельными сообщениями
+            // или придут целиком из runs.get выше при смене активной сессии).
             const selectedDetails =
               prev.selectedId === data.meta.id && prev.selectedDetails
                 ? { ...prev.selectedDetails, meta: data.meta }
@@ -322,8 +391,11 @@ export function useRunsWiring(): void {
         }
         case 'runs.message.appended': {
           setState((prev) => {
-            // Добавляем сообщение в ленту только если открыт этот ран.
-            // В будущем можно показывать «новый ответ» в списке слева.
+            // Применяем live-приращение, только если открыт этот ран И
+            // sessionId события совпадает с просматриваемой сессией
+            // (selectedSessionId явный = он, undefined = активная). Это
+            // нужно, чтобы обновления одной сессии не подмешивались в
+            // чужие табы (#0012).
             if (
               prev.selectedId !== data.runId ||
               !prev.selectedDetails ||
@@ -331,6 +403,9 @@ export function useRunsWiring(): void {
             ) {
               return prev;
             }
+            const viewedSessionId =
+              prev.selectedSessionId ?? prev.selectedDetails.meta.activeSessionId;
+            if (viewedSessionId !== data.sessionId) return prev;
             return {
               ...prev,
               selectedDetails: {
@@ -343,7 +418,6 @@ export function useRunsWiring(): void {
         }
         case 'runs.tool.appended': {
           setState((prev) => {
-            // Аналогично message.appended — обновляем только открытый ран.
             if (
               prev.selectedId !== data.runId ||
               !prev.selectedDetails ||
@@ -351,6 +425,9 @@ export function useRunsWiring(): void {
             ) {
               return prev;
             }
+            const viewedSessionId =
+              prev.selectedSessionId ?? prev.selectedDetails.meta.activeSessionId;
+            if (viewedSessionId !== data.sessionId) return prev;
             return {
               ...prev,
               selectedDetails: {

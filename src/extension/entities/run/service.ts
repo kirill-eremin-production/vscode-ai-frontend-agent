@@ -150,11 +150,20 @@ export async function listRuns(): Promise<RunMeta[]> {
  * нормальное состояние свежего рана, `readToolEvents` сам вернёт `[]`.
  */
 export async function getRunDetails(
-  runId: string
-): Promise<{ meta: RunMeta; chat: ChatMessage[]; tools: ToolEvent[] } | undefined> {
+  runId: string,
+  sessionId?: string
+): Promise<
+  { meta: RunMeta; chat: ChatMessage[]; tools: ToolEvent[]; sessionId: string } | undefined
+> {
   const meta = await readMeta(runId);
   if (!meta) return undefined;
-  const chat = await readChat(runId);
-  const tools = await readToolEvents(runId);
-  return { meta, chat, tools };
+  // По умолчанию читаем активную сессию (как было до #0012). Если UI
+  // явно попросил другую сессию (клик по табу) — читаем её. Невалидный
+  // sessionId (нет такой папки) даст пустые chat/tools — это сознательно:
+  // расхождение UI и диска пусть видно через пустую ленту, а не через
+  // тихий fallback на active (который мог бы запутать пользователя).
+  const sid = sessionId ?? meta.activeSessionId;
+  const chat = await readChat(runId, sid);
+  const tools = await readToolEvents(runId, sid);
+  return { meta, chat, tools, sessionId: sid };
 }

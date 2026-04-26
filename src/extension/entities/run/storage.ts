@@ -448,6 +448,40 @@ export async function setSessionStatus(
 }
 
 /**
+ * Идемпотентно добавить участника в `participants` сессии. Никаких
+ * правок, если такой участник уже есть (сравниваем по `kind`+`role`).
+ *
+ * Используется в #0012, когда пользователь впервые пишет в agent-agent
+ * сессию: bridge превращается в hybrid (`participants` пополняется
+ * `{kind:'user'}`). Для UI это сигнал «теперь это смешанный канал»;
+ * для будущих ролей-наблюдателей — формальное право участвовать.
+ *
+ * Возвращает обновлённую RunMeta, если изменение применилось, и
+ * undefined, если participants уже содержал этого участника (или
+ * сессии нет).
+ */
+export async function addParticipant(
+  runId: string,
+  sessionId: string,
+  participant: Participant
+): Promise<RunMeta | undefined> {
+  const session = await readSessionMeta(runId, sessionId);
+  if (!session) return undefined;
+  const exists = session.participants.some((p) =>
+    p.kind === 'user'
+      ? participant.kind === 'user'
+      : participant.kind === 'agent' && p.role === participant.role
+  );
+  if (exists) return undefined;
+  const updated: SessionMeta = {
+    ...session,
+    participants: [...session.participants, participant],
+    updatedAt: new Date().toISOString(),
+  };
+  return persistSessionUpdate(runId, updated);
+}
+
+/**
  * Сменить активную сессию рана (используется компактификацией).
  * При успехе RunMeta.status тоже синхронизируется со статусом новой
  * активной сессии.
@@ -673,10 +707,11 @@ export async function appendChatMessage(
   runId: string,
   message: ChatMessage,
   sessionId?: string
-): Promise<void> {
+): Promise<string> {
   const sid = sessionId ?? (await getActiveSessionIdOrThrow(runId));
   const filePath = path.join(getSessionDir(runId, sid), CHAT_FILE);
   await fs.appendFile(filePath, JSON.stringify(message) + '\n', 'utf8');
+  return sid;
 }
 
 /**
@@ -741,10 +776,11 @@ export async function appendToolEvent(
   runId: string,
   event: ToolEvent,
   sessionId?: string
-): Promise<void> {
+): Promise<string> {
   const sid = sessionId ?? (await getActiveSessionIdOrThrow(runId));
   const filePath = path.join(getSessionDir(runId, sid), TOOLS_FILE);
   await fs.appendFile(filePath, JSON.stringify(event) + '\n', 'utf8');
+  return sid;
 }
 
 /**
