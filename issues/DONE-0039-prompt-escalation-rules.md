@@ -1,7 +1,7 @@
 ---
 id: 0039
 title: Промпты ролей — правило escalate vs invite
-status: open
+status: done
 created: 2026-04-26
 ---
 
@@ -30,3 +30,15 @@ created: 2026-04-26
 
 - Подзадача #0032.
 - Зависит от: #0037, #0038.
+
+## Outcome
+
+В трёх ролевых промптах (`src/extension/entities/run/roles/{product,architect,programmer}.prompt.ts`)
+добавлен раздел `## Команда и эскалация` с иерархией `User → product → architect → programmer`,
+правилом «соседний уровень → `team.invite`, через уровень → `team.escalate`» и ролевой
+конкретикой по AC: programmer получил пример эскалации к продакту с итоговым составом
+`[programmer, architect, product]`, architect — указание, что invite соседей норма и
+escalate ему практически не нужен, product — подсказку, что `team.escalate('programmer', ...)`
+сам подтянет архитектора. Покрытие — `team-escalation-prompts.test.ts` (snapshot-стайл
+подстроки для каждого инварианта), US-39 в `tests/user-stories.md`, ручной TC-46.
+Реализация — коммит 120b544.
