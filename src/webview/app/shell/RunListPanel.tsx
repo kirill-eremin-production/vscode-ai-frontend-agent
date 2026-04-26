@@ -1,6 +1,7 @@
 import { ChevronLeft, ChevronRight, Plus } from 'lucide-react';
 import { IconButton, Tooltip } from '@shared/ui';
 import { RunList } from '@features/run-list';
+import { OpenInTabButton } from '@features/open-in-tab';
 import { setLeftPanelCollapsed, startNewRun, useRunsState } from '@shared/runs/store';
 
 /**
@@ -61,6 +62,7 @@ export function RunListPanel(props: RunListPanelProps) {
           onClick={() => setLeftPanelCollapsed(false)}
         />
         {renderNewRunButton(14)}
+        <OpenInTabButton />
       </aside>
     );
   }
@@ -74,6 +76,7 @@ export function RunListPanel(props: RunListPanelProps) {
         <span className="text-[12px] font-semibold leading-none">Раны</span>
         <div className="flex items-center gap-1">
           {renderNewRunButton(14)}
+          <OpenInTabButton />
           <IconButton
             aria-label="Свернуть список ранов"
             icon={<ChevronLeft size={14} aria-hidden />}

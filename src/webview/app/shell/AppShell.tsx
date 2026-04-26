@@ -1,4 +1,3 @@
-import { OpenInTabButton } from '@features/open-in-tab';
 import { SessionsPanel } from '@features/sessions-panel';
 import { selectSessionsPanelCollapsed, useRunsState } from '@shared/runs/store';
 import { MainArea } from './MainArea';
@@ -31,16 +30,13 @@ export function AppShell() {
   }`;
 
   return (
-    <div className="flex flex-col h-screen bg-surface text-foreground">
-      <header className="flex items-center justify-between px-3 py-2 border-b border-border">
-        <h1 className="text-[13px] font-semibold leading-none">AI Frontend Agent</h1>
-        <OpenInTabButton />
-      </header>
-      <div className="grid flex-1 min-h-0" style={{ gridTemplateColumns: gridTemplate }}>
-        <RunListPanel collapsed={state.leftPanelCollapsed} />
-        <MainArea />
-        <SessionsPanel />
-      </div>
+    <div
+      className="grid h-screen min-h-0 bg-surface text-foreground"
+      style={{ gridTemplateColumns: gridTemplate }}
+    >
+      <RunListPanel collapsed={state.leftPanelCollapsed} />
+      <MainArea />
+      <SessionsPanel />
     </div>
   );
 }

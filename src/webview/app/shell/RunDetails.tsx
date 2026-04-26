@@ -128,22 +128,24 @@ function RunUsageHeader(props: { meta: RunMeta }) {
   const zone = zoneFor(ratio);
   const cost = formatCost(usage.costUsd);
   return (
-    <section className="run-details__usage flex items-center gap-2 text-[11px] text-muted mt-1 flex-wrap">
-      <span title="Сумма по всем сессиям рана">{cost}</span>
-      <span>·</span>
+    <section
+      className="run-details__usage flex items-center gap-2 text-[10px] text-muted leading-none whitespace-nowrap overflow-hidden"
+      title={`Стоимость: ${cost}\nТокены in/out: ${usage.inputTokens.toLocaleString('ru-RU')} / ${usage.outputTokens.toLocaleString('ru-RU')}${limit ? `\nКонтекст: ${usage.lastTotalTokens.toLocaleString('ru-RU')} / ${limit.toLocaleString('ru-RU')}` : ''}`}
+    >
+      <span>{cost}</span>
+      <span className="opacity-40">·</span>
       <span>
-        {formatTokens(usage.inputTokens)}/{formatTokens(usage.outputTokens)} токенов
+        {formatTokens(usage.inputTokens)}/{formatTokens(usage.outputTokens)}
       </span>
-      <span>·</span>
+      <span className="opacity-40">·</span>
       {limit ? (
         <>
           <div
-            className={`run-details__context-bar run-details__context-bar--${zone} h-1.5 w-20 rounded bg-[var(--vscode-input-background)] overflow-hidden`}
+            className={`run-details__context-bar run-details__context-bar--${zone} h-1 w-16 rounded bg-[var(--vscode-input-background)] overflow-hidden`}
             role="progressbar"
             aria-valuemin={0}
             aria-valuemax={limit}
             aria-valuenow={usage.lastTotalTokens}
-            title={`${usage.lastTotalTokens.toLocaleString('ru-RU')} / ${limit.toLocaleString('ru-RU')} токенов`}
           >
             <div
               className="run-details__context-fill h-full bg-[var(--vscode-progressBar-background)]"
@@ -155,10 +157,10 @@ function RunUsageHeader(props: { meta: RunMeta }) {
           </span>
         </>
       ) : (
-        <span title="Лимит контекста для этой модели не зафиксирован">контекст: ?</span>
+        <span>ctx ?</span>
       )}
       <button
-        className="run-details__compact-btn text-[11px] underline opacity-50"
+        className="run-details__compact-btn text-[10px] underline opacity-50"
         type="button"
         disabled
         title="Ручная компактификация контекста — будет в #0013."

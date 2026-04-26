@@ -1,3 +1,5 @@
+import { ExternalLink } from 'lucide-react';
+import { IconButton } from '@shared/ui';
 import { vscode } from '@shared/api/vscode';
 
 /**
@@ -13,13 +15,12 @@ import { vscode } from '@shared/api/vscode';
  *    «открыто/закрыто» или превью).
  */
 export function OpenInTabButton() {
-  const handleClick = () => {
-    vscode.postMessage({ type: 'openInTab' });
-  };
-
   return (
-    <button type="button" onClick={handleClick}>
-      Open in editor tab
-    </button>
+    <IconButton
+      aria-label="Открыть в вкладке редактора"
+      title="Открыть в вкладке редактора"
+      icon={<ExternalLink size={14} aria-hidden />}
+      onClick={() => vscode.postMessage({ type: 'openInTab' })}
+    />
   );
 }
