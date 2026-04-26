@@ -1,10 +1,14 @@
 import { useMemo, useState } from 'react';
 import {
   composerSendKey,
+  selectRunDetailsTab,
   sendFinalizeSignal,
   sendUserMessage,
+  setRunDetailsTab,
   useRunsState,
+  type RunDetailsTab,
 } from '@shared/runs/store';
+import { RunCanvas } from '@features/canvas';
 import type { ChatMessage, RunMeta, RunStatus, ToolEvent } from '@shared/runs/types';
 import { contextLimitFor, zoneFor } from '@shared/runs/pricing';
 import { ChatFeed, ChatMessage as ChatBubble, ToolCard } from '@features/chat';
@@ -26,6 +30,7 @@ import clsx from 'clsx';
  * tool-events временно остаётся здесь же — переедет в #0021.
  */
 export function RunDetails() {
+  const stateSnapshot = useRunsState();
   const {
     selectedId,
     selectedSessionId,
@@ -34,7 +39,7 @@ export function RunDetails() {
     selectedBrief,
     selectedPlan,
     pendingByKey,
-  } = useRunsState();
+  } = stateSnapshot;
 
   if (!selectedId) {
     return <div className="p-3 text-muted">Выберите ран слева.</div>;
@@ -48,6 +53,7 @@ export function RunDetails() {
   const isViewingActive = viewedSessionId === meta.activeSessionId;
   const activeRole = inferActiveRole(chat);
   const activity = describeRunActivity({ meta, tools, role: activeRole });
+  const tab: RunDetailsTab = selectRunDetailsTab(stateSnapshot, meta.id);
 
   return (
     <div className="run-details flex flex-col min-h-0 h-full">
@@ -82,7 +88,22 @@ export function RunDetails() {
           </details>
         )}
       </div>
-      <Timeline chat={chat} tools={tools} sessionId={viewedSessionId} />
+      <RunDetailsTabs
+        runId={meta.id}
+        active={tab}
+        onSelect={(next) => setRunDetailsTab(meta.id, next)}
+      />
+      {tab === 'canvas' ? (
+        <div className="run-details__canvas flex-1 min-h-0">
+          <RunCanvas
+            meta={meta}
+            tools={tools}
+            onSwitchToChat={() => setRunDetailsTab(meta.id, 'chat')}
+          />
+        </div>
+      ) : (
+        <Timeline chat={chat} tools={tools} sessionId={viewedSessionId} />
+      )}
       <Composer
         runId={meta.id}
         status={meta.status}
@@ -446,6 +467,52 @@ function inferActiveRole(chat: ChatMessage[]): Role {
     if (tail === 'product' || tail === 'architect' || tail === 'system') return tail;
   }
   return 'product';
+}
+
+/**
+ * Переключатель вкладок «Карта» / «Чат» внутри run-details (#0023).
+ *
+ * Намеренно лёгкий: две кнопки в одной строке, без Tabs-радикса. Per-run
+ * выбор хранится в UI-префах (см. setRunDetailsTab), так что переключение
+ * переживает перезагрузку.
+ */
+function RunDetailsTabs(props: {
+  runId: string;
+  active: RunDetailsTab;
+  onSelect: (tab: RunDetailsTab) => void;
+}) {
+  const tabs: Array<{ id: RunDetailsTab; label: string }> = [
+    { id: 'canvas', label: 'Карта' },
+    { id: 'chat', label: 'Чат' },
+  ];
+  return (
+    <div
+      className="run-details__tabs flex-shrink-0 flex gap-1 px-2 pt-1 border-b border-border-subtle"
+      role="tablist"
+    >
+      {tabs.map((tab) => {
+        const isActive = props.active === tab.id;
+        return (
+          <button
+            key={tab.id}
+            type="button"
+            role="tab"
+            aria-selected={isActive}
+            data-run-tab={tab.id}
+            onClick={() => props.onSelect(tab.id)}
+            className={clsx(
+              'px-2 py-1 text-[11px] rounded-t-sm border-b-2 transition-colors',
+              isActive
+                ? 'border-[var(--vscode-focusBorder)] text-foreground'
+                : 'border-transparent text-muted hover:text-foreground'
+            )}
+          >
+            {tab.label}
+          </button>
+        );
+      })}
+    </div>
+  );
 }
 
 function RunDetailsSkeleton() {

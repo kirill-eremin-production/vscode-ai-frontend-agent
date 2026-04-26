@@ -131,6 +131,14 @@ export interface SessionSummary {
   updatedAt: string;
   parentSessionId?: string;
   usage: UsageAggregate;
+  /**
+   * Участники сессии. Зеркало `SessionMeta.participants`, дублируется
+   * в summary, чтобы канвас (#0023) и шапка рана могли определить
+   * роль(и) каждой сессии без чтения N session-meta файлов. Optional
+   * для обратной совместимости со старыми meta.json — при их загрузке
+   * поле просто будет undefined и UI откатится на дефолт «продакт».
+   */
+  participants?: Participant[];
 }
 
 /**

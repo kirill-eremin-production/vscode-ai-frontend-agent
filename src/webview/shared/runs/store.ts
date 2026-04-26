@@ -113,7 +113,15 @@ interface RunsState {
    * `startPending` — обычно через таймер или ack-сообщение из extension.
    */
   pendingByKey: Record<string, boolean>;
+  /**
+   * Per-run выбор вкладки внутри `run-details`: 'canvas' (#0023) — карта
+   * команды, 'chat' — лента сообщений. Дефолт — 'canvas' (карта первична).
+   * Persist'ится через UI-префы под ключом `runDetails.tab.<runId>`.
+   */
+  runDetailsTabByRun: Record<string, RunDetailsTab>;
 }
+
+export type RunDetailsTab = 'canvas' | 'chat';
 
 export type MainAreaMode = 'run-details' | 'new-run' | 'empty';
 
@@ -134,6 +142,7 @@ const initialState: RunsState = {
   hasWorkspace: true,
   runsListLoaded: false,
   pendingByKey: {},
+  runDetailsTabByRun: {},
 };
 
 /** Пометить локальный pending-флаг для произвольной операции (#0022). */
@@ -172,6 +181,29 @@ const SESSIONS_PANEL_PREF_PREFIX = 'sessionsPanel.collapsed.';
 
 function sessionsPanelPrefKey(runId: string): string {
   return `${SESSIONS_PANEL_PREF_PREFIX}${runId}`;
+}
+
+const RUN_DETAILS_TAB_PREF_PREFIX = 'runDetails.tab.';
+
+function runDetailsTabPrefKey(runId: string): string {
+  return `${RUN_DETAILS_TAB_PREF_PREFIX}${runId}`;
+}
+
+/**
+ * Записать выбранную вкладку run-details для конкретного рана (#0023).
+ * Optimistic update + persist через UI-префы.
+ */
+export function setRunDetailsTab(runId: string, tab: RunDetailsTab): void {
+  setState((prev) => ({
+    ...prev,
+    runDetailsTabByRun: { ...prev.runDetailsTabByRun, [runId]: tab },
+  }));
+  send({ type: 'state.setUiPref', key: runDetailsTabPrefKey(runId), value: tab });
+}
+
+/** Эффективная вкладка для рана: явный выбор пользователя или дефолт 'canvas'. */
+export function selectRunDetailsTab(state: RunsState, runId: string): RunDetailsTab {
+  return state.runDetailsTabByRun[runId] ?? 'canvas';
 }
 
 /**
@@ -564,15 +596,26 @@ export function useRunsWiring(): void {
             const sessionsByRun: Record<string, boolean> = {
               ...prev.sessionsPanelCollapsedByRun,
             };
+            const tabByRun: Record<string, RunDetailsTab> = { ...prev.runDetailsTabByRun };
             for (const [key, value] of Object.entries(data.prefs)) {
-              if (!key.startsWith(SESSIONS_PANEL_PREF_PREFIX)) continue;
-              if (typeof value !== 'boolean') continue;
-              sessionsByRun[key.slice(SESSIONS_PANEL_PREF_PREFIX.length)] = value;
+              if (key.startsWith(SESSIONS_PANEL_PREF_PREFIX)) {
+                if (typeof value === 'boolean') {
+                  sessionsByRun[key.slice(SESSIONS_PANEL_PREF_PREFIX.length)] = value;
+                }
+                continue;
+              }
+              if (key.startsWith(RUN_DETAILS_TAB_PREF_PREFIX)) {
+                if (value === 'canvas' || value === 'chat') {
+                  tabByRun[key.slice(RUN_DETAILS_TAB_PREF_PREFIX.length)] = value;
+                }
+                continue;
+              }
             }
             return {
               ...prev,
               leftPanelCollapsed: typeof left === 'boolean' ? left : prev.leftPanelCollapsed,
               sessionsPanelCollapsedByRun: sessionsByRun,
+              runDetailsTabByRun: tabByRun,
             };
           });
           return;

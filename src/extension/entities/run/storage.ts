@@ -156,6 +156,7 @@ function toSummary(session: SessionMeta): SessionSummary {
     updatedAt: session.updatedAt,
     parentSessionId: session.parentSessionId,
     usage: session.usage,
+    participants: session.participants,
   };
 }
 

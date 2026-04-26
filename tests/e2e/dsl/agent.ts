@@ -307,6 +307,7 @@ export class AgentDriver {
    * по ссылке `.tool-card__file-link` внутри неё.
    */
   async openFileFromToolEntry(relativePathFromKb: string): Promise<void> {
+    await this.switchToChatTab();
     const ui = agentWebviewContent(this.window);
     const card = ui.locator('.tool-card', { hasText: relativePathFromKb }).first();
     await card.waitFor({ state: 'visible', timeout: 30_000 });
@@ -320,12 +321,56 @@ export class AgentDriver {
    * Дождаться появления tool-карточки с указанным именем тула в ленте.
    * Карточки помечены `data-tool="<name>"` (#0021) — это устойчивее,
    * чем `hasText`: имя моноширью внутри code не поедет по соседям.
+   *
+   * После #0023 main-area открывается на вкладке «Карта» — чат-лента
+   * не отрендерена. Перед ожиданием tool-карточки переключаемся на
+   * «Чат», иначе селектор провисит до таймаута. Старым TC (TC-23, TC-24)
+   * не требуется явно знать про вкладки.
    */
   async waitForToolEntry(toolName: string): Promise<void> {
+    await this.switchToChatTab();
     const ui = agentWebviewContent(this.window);
     await ui
       .locator(`.tool-card[data-tool="${toolName}"]`)
       .first()
       .waitFor({ state: 'visible', timeout: 30_000 });
+  }
+
+  /**
+   * Переключить run-details на вкладку «Чат» (#0023). Идемпотентно:
+   * если вкладка уже активна — ничего не делает, чтобы не дёргать UI.
+   * Используется TC, которым нужна лента (TC-23/24, и любые новые).
+   */
+  async switchToChatTab(): Promise<void> {
+    const ui = agentWebviewContent(this.window);
+    const tab = ui.locator('button[data-run-tab="chat"]');
+    await tab.waitFor({ state: 'visible', timeout: 15_000 });
+    if ((await tab.getAttribute('aria-selected')) === 'true') return;
+    await tab.click();
+    await ui
+      .locator('.run-details__chat, .ChatFeed, .chat-feed')
+      .first()
+      .waitFor({
+        state: 'attached',
+        timeout: 5_000,
+      })
+      .catch(() => {
+        // ChatFeed может не использовать ни один из этих классов в DOM —
+        // ждём вместо этого появления composer'а как маркер «чат отрисован».
+      });
+  }
+
+  /**
+   * Переключить run-details на вкладку «Карта» (#0023). Симметричный
+   * хелпер; используется новыми canvas-TC и для возврата к карте после
+   * проверок чата.
+   */
+  async switchToCanvasTab(): Promise<void> {
+    const ui = agentWebviewContent(this.window);
+    const tab = ui.locator('button[data-run-tab="canvas"]');
+    await tab.waitFor({ state: 'visible', timeout: 15_000 });
+    if ((await tab.getAttribute('aria-selected')) === 'true') return;
+    await tab.click();
+    await ui.locator('[data-canvas-root]').waitFor({ state: 'visible', timeout: 5_000 });
   }
 }

@@ -48,6 +48,13 @@ export interface UsageAggregate {
  */
 export type SessionKind = 'user-agent' | 'agent-agent';
 
+/**
+ * Участник сессии. Зеркало `Participant` из extension/entities/run/types.ts.
+ * Используется канвасом команды (#0023) для определения, кого рисовать
+ * на каком кубике и куда ведут стрелки handoff'ов.
+ */
+export type Participant = { kind: 'user' } | { kind: 'agent'; role: string };
+
 export interface SessionSummary {
   id: string;
   kind: SessionKind;
@@ -56,6 +63,12 @@ export interface SessionSummary {
   updatedAt: string;
   parentSessionId?: string;
   usage: UsageAggregate;
+  /**
+   * Список участников. Optional для обратной совместимости со старыми
+   * meta.json (до #0023 поле не писалось). Если undefined — канвас
+   * рендерит fallback (одного продакта).
+   */
+  participants?: Participant[];
 }
 
 /**
@@ -89,6 +102,10 @@ export interface RunMeta {
   sessions: SessionSummary[];
   /** Суммарный usage по всем сессиям рана — для шапки. */
   usage: UsageAggregate;
+  /** Путь к brief.md (workspace-relative). Заполняется при финализации продакта. */
+  briefPath?: string;
+  /** Путь к plan.md (workspace-relative). Заполняется при финализации архитектора. */
+  planPath?: string;
 }
 
 /**
