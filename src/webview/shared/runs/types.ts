@@ -52,6 +52,11 @@ export type SessionKind = 'user-agent' | 'agent-agent';
  * Участник сессии. Зеркало `Participant` из extension/entities/run/types.ts.
  * Используется канвасом команды (#0023) для определения, кого рисовать
  * на каком кубике и куда ведут стрелки handoff'ов.
+ *
+ * **Длина массива.** После #0034 — произвольная ≥ 1. До этого код мог
+ * полагаться на пару (`[0]`/`[1]`/`length === 2`), что блокировало
+ * многоучастниковые комнаты (#0036, #0038). Теперь обход — только через
+ * `some/filter/map`, индекс по позиции запрещён.
  */
 export type Participant = { kind: 'user' } | { kind: 'agent'; role: string };
 
@@ -64,9 +69,13 @@ export interface SessionSummary {
   parentSessionId?: string;
   usage: UsageAggregate;
   /**
-   * Список участников. Optional для обратной совместимости со старыми
-   * meta.json (до #0023 поле не писалось). Если undefined — канвас
-   * рендерит fallback (одного продакта).
+   * Список участников сессии. После #0034 extension при чтении meta.json
+   * всегда нормализует legacy-формат → массив длины ≥ 1, поэтому в
+   * runtime webview видит корректный массив. Поле формально оставлено
+   * optional на стороне webview, чтобы юнит-тесты UI могли строить
+   * synthetic RunMeta без participants и проверять defensive-ветви
+   * (`?? []`) в `layout`/`drill-resolver`/`flashes` — реальные данные
+   * из extension'а под условие `!participants` уже не попадают.
    */
   participants?: Participant[];
 }

@@ -211,6 +211,154 @@ describe('createSession + setActiveSession (готовность к #0013)', () 
   });
 });
 
+/**
+ * #0034: формат `participants` — массив длины ≥ 1 (а не пара).
+ *
+ * Покрытие:
+ *  - read-time normalization старого session-meta без массива участников
+ *    (`agentRole`/`kind` восстанавливаются в массив длины 2);
+ *  - round-trip новых сессий длины 2 и 3 — write/read возвращает
+ *    исходный массив без перестановок и потерь.
+ */
+describe('participants — массив произвольной длины (#0034)', () => {
+  /**
+   * Подменить файл session-meta legacy-объектом на диске. Используем
+   * прямой fs.writeFile, чтобы обойти типизацию SessionMeta — старые
+   * файлы реально были без `participants`, так что симулируем именно
+   * фактическое содержимое, а не текущую TypeScript-форму.
+   */
+  async function writeLegacySessionMetaRaw(
+    runId: string,
+    sessionId: string,
+    raw: Record<string, unknown>
+  ): Promise<void> {
+    const filePath = path.join(
+      globalThis.__TEST_WORKSPACE__,
+      '.agents',
+      'runs',
+      runId,
+      'sessions',
+      sessionId,
+      'meta.json'
+    );
+    await fs.writeFile(filePath, JSON.stringify(raw, null, 2), 'utf8');
+  }
+
+  it('readSessionMeta нормализует legacy meta.json без participants → [user, agent:product]', async () => {
+    const runId = freshRunId();
+    const initial = await initTestRun(runId);
+    // Старый формат: только `agentRole` и `kind`, никакого массива.
+    await writeLegacySessionMetaRaw(runId, initial.activeSessionId, {
+      id: initial.activeSessionId,
+      runId,
+      kind: 'user-agent',
+      agentRole: 'product',
+      status: 'draft',
+      createdAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString(),
+      usage: {
+        inputTokens: 0,
+        outputTokens: 0,
+        costUsd: 0,
+        lastTotalTokens: 0,
+        lastModel: null,
+      },
+    });
+
+    const meta = await readSessionMeta(runId, initial.activeSessionId);
+    expect(meta?.participants).toEqual([{ kind: 'user' }, { kind: 'agent', role: 'product' }]);
+  });
+
+  it('readSessionMeta нормализует legacy agent-agent → пара продакт+архитектор', async () => {
+    const runId = freshRunId();
+    const initial = await initTestRun(runId);
+    await writeLegacySessionMetaRaw(runId, initial.activeSessionId, {
+      id: initial.activeSessionId,
+      runId,
+      kind: 'agent-agent',
+      // agentRole отсутствует — должен сработать дефолт 'product' и вторая
+      // роль определиться по правилу «пара мостов до #0034».
+      status: 'running',
+      createdAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString(),
+      usage: {
+        inputTokens: 0,
+        outputTokens: 0,
+        costUsd: 0,
+        lastTotalTokens: 0,
+        lastModel: null,
+      },
+    });
+
+    const meta = await readSessionMeta(runId, initial.activeSessionId);
+    expect(meta?.participants).toEqual([
+      { kind: 'agent', role: 'product' },
+      { kind: 'agent', role: 'architect' },
+    ]);
+  });
+
+  it('readMeta нормализует sessions[].participants для legacy-summary', async () => {
+    const runId = freshRunId();
+    await initTestRun(runId);
+    // Перезаписываем RunMeta.sessions[0] без поля participants — имитация
+    // ранов, созданных до #0023, где summary ещё не дублировал список.
+    const runDir = path.join(globalThis.__TEST_WORKSPACE__, '.agents', 'runs', runId);
+    const rawMeta = JSON.parse(await fs.readFile(path.join(runDir, 'meta.json'), 'utf8')) as {
+      sessions: Array<Record<string, unknown>>;
+    };
+    for (const session of rawMeta.sessions) {
+      delete session.participants;
+    }
+    await fs.writeFile(path.join(runDir, 'meta.json'), JSON.stringify(rawMeta, null, 2), 'utf8');
+
+    const reread = await readMeta(runId);
+    expect(reread?.sessions[0].participants).toEqual([
+      { kind: 'user' },
+      { kind: 'agent', role: 'product' },
+    ]);
+  });
+
+  it('создание сессии с парой участников: round-trip через диск возвращает массив длины 2', async () => {
+    const runId = freshRunId();
+    await initTestRun(runId);
+    const pair: Participant[] = [
+      { kind: 'agent', role: 'product' },
+      { kind: 'agent', role: 'architect' },
+    ];
+    const result = await createSession(runId, { kind: 'agent-agent', participants: pair });
+    expect(result.session.participants).toEqual(pair);
+
+    const reread = await readSessionMeta(runId, result.session.id);
+    expect(reread?.participants).toEqual(pair);
+
+    const meta = await readMeta(runId);
+    const summary = meta?.sessions.find((s) => s.id === result.session.id);
+    expect(summary?.participants).toEqual(pair);
+  });
+
+  it('создание сессии с тройкой участников (комната): round-trip сохраняет длину 3', async () => {
+    // Это будущий кейс из #0036/#0038 — комната, в которую подтянули
+    // дополнительного агента или пользователя. На уровне storage задача
+    // #0034 уже должна обеспечить корректную сериализацию N>2.
+    const runId = freshRunId();
+    await initTestRun(runId);
+    const trio: Participant[] = [
+      { kind: 'agent', role: 'programmer' },
+      { kind: 'agent', role: 'architect' },
+      { kind: 'agent', role: 'product' },
+    ];
+    const result = await createSession(runId, { kind: 'agent-agent', participants: trio });
+    expect(result.session.participants).toHaveLength(3);
+
+    const reread = await readSessionMeta(runId, result.session.id);
+    expect(reread?.participants).toEqual(trio);
+
+    const meta = await readMeta(runId);
+    const summary = meta?.sessions.find((s) => s.id === result.session.id);
+    expect(summary?.participants).toEqual(trio);
+  });
+});
+
 describe('addUsageToActiveSession (#0008)', () => {
   it('накапливает токены и стоимость в активной сессии и в RunMeta', async () => {
     const runId = freshRunId();

@@ -195,18 +195,84 @@ function aggregateRunUsage(sessions: SessionSummary[]): UsageAggregate {
   return { inputTokens, outputTokens, costUsd, lastTotalTokens, lastModel };
 }
 
+/* ── Legacy participants normalization (#0034) ──────────────────── */
+
+/**
+ * Восстановить `participants` из легаси-полей старого session-meta.
+ *
+ * До #0034 пара участников могла храниться полем `agentRole: string` без
+ * явного массива (а ещё раньше — вообще без участников, только тип `kind`).
+ * Чтобы новый код не делал `?? []`-проверок повсюду и не получал пустой
+ * массив, на чтении подменяем недостающее на массив длины 2 — единственный
+ * исторический случай (комнаты с 3+ участниками появились вместе с этой же
+ * задачей).
+ *
+ * Правила нормализации:
+ *  - если `participants` уже непустой массив — оставляем как есть;
+ *  - иначе для `kind === 'agent-agent'` собираем `[product, architect]`
+ *    (исторически единственная пара мостов на момент legacy-формата);
+ *  - иначе (user-agent или неизвестный kind) — `[user, agent:<role>]`,
+ *    где `<role>` берётся из `agentRole` или дефолт 'product'.
+ *
+ * Файл на диске не переписывается — нормализация чистая, только в памяти.
+ */
+function normalizeParticipants(
+  raw: { participants?: unknown; agentRole?: unknown; kind?: unknown } | null | undefined
+): Participant[] {
+  const list = (raw?.participants as Participant[] | undefined) ?? [];
+  if (Array.isArray(list) && list.length > 0) return list;
+
+  const legacyRole = typeof raw?.agentRole === 'string' ? raw.agentRole : 'product';
+  if (raw?.kind === 'agent-agent') {
+    return [
+      { kind: 'agent', role: legacyRole },
+      { kind: 'agent', role: legacyRole === 'product' ? 'architect' : 'product' },
+    ];
+  }
+  return [{ kind: 'user' }, { kind: 'agent', role: legacyRole }];
+}
+
+/**
+ * Привести SessionMeta из старого формата к актуальному. Идемпотентно:
+ * если participants уже корректный массив — возвращает исходный объект.
+ */
+function normalizeSessionMeta(raw: SessionMeta): SessionMeta {
+  const participants = normalizeParticipants(raw as unknown as Record<string, unknown>);
+  if (raw.participants === participants) return raw;
+  return { ...raw, participants };
+}
+
+/**
+ * Привести SessionSummary в RunMeta.sessions[] к актуальному формату.
+ * До #0034 поле `participants` в summary было опциональным — после миграции
+ * всегда массив длины ≥ 1. Используется в `readMeta`, чтобы webview не
+ * получал summary без участников (часть UI завязана на их наличие).
+ */
+function normalizeSessionSummary(raw: SessionSummary): SessionSummary {
+  const participants = normalizeParticipants(raw as unknown as Record<string, unknown>);
+  if (raw.participants === participants) return raw;
+  return { ...raw, participants };
+}
+
 /* ── Run meta read/write ────────────────────────────────────────── */
 
 /**
  * Прочитать meta.json одного рана. Возвращает undefined, если файла
  * нет или JSON битый — список ранов не должен падать целиком из-за
  * одной повреждённой папки.
+ *
+ * После #0034 — нормализуем `sessions[].participants` для legacy-файлов:
+ * вызывающий код всегда получает summary с непустым массивом участников.
  */
 export async function readMeta(runId: string): Promise<RunMeta | undefined> {
   const filePath = path.join(getRunDir(runId), META_FILE);
   try {
     const raw = await fs.readFile(filePath, 'utf8');
-    return JSON.parse(raw) as RunMeta;
+    const parsed = JSON.parse(raw) as RunMeta;
+    const sessions = Array.isArray(parsed.sessions)
+      ? parsed.sessions.map(normalizeSessionSummary)
+      : [];
+    return { ...parsed, sessions };
   } catch {
     return undefined;
   }
@@ -359,7 +425,13 @@ export async function createSession(
 
 /* ── Session meta read/update ───────────────────────────────────── */
 
-/** Прочитать SessionMeta. Undefined — нет такой сессии (или JSON битый). */
+/**
+ * Прочитать SessionMeta. Undefined — нет такой сессии (или JSON битый).
+ *
+ * После #0034 — нормализуем `participants` для legacy-файлов (см.
+ * `normalizeSessionMeta`): вызывающий код всегда получает массив
+ * длины ≥ 1, даже если на диске участники не сохранены явно.
+ */
 export async function readSessionMeta(
   runId: string,
   sessionId: string
@@ -367,7 +439,7 @@ export async function readSessionMeta(
   const filePath = path.join(getSessionDir(runId, sessionId), META_FILE);
   try {
     const raw = await fs.readFile(filePath, 'utf8');
-    return JSON.parse(raw) as SessionMeta;
+    return normalizeSessionMeta(JSON.parse(raw) as SessionMeta);
   } catch {
     return undefined;
   }
