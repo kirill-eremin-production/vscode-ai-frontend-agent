@@ -1,7 +1,7 @@
 ---
 id: 0044
 title: Canvas — состояния кубика idle/working/awaiting_user
-status: open
+status: done
 created: 2026-04-26
 ---
 
@@ -33,3 +33,16 @@ created: 2026-04-26
 - Подзадача #0028.
 - Зависит от: #0042.
 - Связан: #0052 (добавит `paused`).
+
+## Outcome
+
+Реализована чистая функция `cubeStateFor(role, runState)` в
+[src/webview/features/canvas/cube-state.ts](../src/webview/features/canvas/cube-state.ts)
+с 8 unit-тестами на все ветви алгоритма из AC. `RunCanvas` принимает
+`chat` активной сессии и драйвит cube-state'ом рамку, пульсирующий
+SVG-dot и атрибут `data-canvas-cube-state` на каждом кубике. Линии-
+репортинги (#0042) на пересчёт cube-state не реагируют. Storybook-
+story `Features/Canvas/Cube states` показывает все три состояния.
+US-44 в `tests/user-stories.md`, ручной TC-51 в
+`tests/e2e/specs/tc-51-canvas-cube-states.md`. Реализация прошла
+ревью без замечаний — коммит 51dfad6.
