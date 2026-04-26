@@ -72,6 +72,9 @@
     "lint:fix": "eslint . --fix",
     "test:unit": "vitest run",
     "test:unit:watch": "vitest",
+    "test:e2e:full": "playwright test --config tests/e2e/playwright.config.ts",
+    "test:e2e:full:ui": "playwright test --config tests/e2e/playwright.config.ts --ui",
+    "test:e2e:report": "playwright show-report playwright-report",
     "package": "vsce package",
     "install:local": "npm run package && code --install-extension vscode-ai-frontend-agent-$npm_package_version.vsix --force",
     "prepare": "husky"
@@ -92,10 +95,12 @@
   },
   "devDependencies": {
     "@eslint/js": "^9.39.4",
+    "@playwright/test": "^1.59.1",
     "@types/node": "^24.12.2",
     "@types/react": "^19.2.0",
     "@types/react-dom": "^19.2.0",
     "@types/vscode": "^1.95.0",
+    "@vscode/test-electron": "^2.5.2",
     "@vscode/vsce": "^3.8.1",
     "esbuild": "^0.28.0",
     "eslint": "^9.39.4",

@@ -1,0 +1,15 @@
+{
+  "name": "ai-frontend-agent-e2e-helper",
+  "displayName": "AI Frontend Agent E2E Helper",
+  "description": "Test-only extension that intercepts OpenRouter calls via global.fetch. Активируется параллельно с основным расширением только в e2e-прогонах.",
+  "version": "0.0.0",
+  "publisher": "local",
+  "private": true,
+  "engines": {
+    "vscode": "^1.95.0"
+  },
+  "main": "./extension.js",
+  "activationEvents": [
+    "onStartupFinished"
+  ]
+}

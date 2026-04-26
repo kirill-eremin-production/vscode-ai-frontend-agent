@@ -2,3 +2,9 @@ node_modules/
 out/
 *.vsix
 .DS_Store
+
+# Playwright e2e
+.vscode-test/
+tests/e2e/.vscode-executable-path
+playwright-report/
+test-results/
