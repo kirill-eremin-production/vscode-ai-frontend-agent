@@ -2,7 +2,13 @@ import * as path from 'node:path';
 import * as crypto from 'node:crypto';
 import * as vscode from 'vscode';
 import { createRun, getRunDetails, listRuns } from '@ext/entities/run/service';
-import { appendChatMessage, findPendingAsk, readBrief, readMeta } from '@ext/entities/run/storage';
+import {
+  appendChatMessage,
+  findPendingAsk,
+  readBrief,
+  readMeta,
+  readPlan,
+} from '@ext/entities/run/storage';
 import { resumeRun } from '@ext/entities/run/resume-registry';
 import { resolvePendingAsk } from '@ext/shared/agent-loop';
 import {
@@ -103,6 +109,10 @@ export function wireRunMessages(
           // awaiting_human (штатный финал). readBrief сам вернёт
           // undefined, если файла нет — лишнего I/O не будет.
           const brief = details ? await readBrief(msg.id) : undefined;
+          // plan.md появляется после успеха архитекторской роли (#0004).
+          // Читаем безусловно по тем же мотивам, что и brief: пустой —
+          // вернётся undefined без лишнего I/O.
+          const plan = details ? await readPlan(msg.id) : undefined;
           send({
             type: 'runs.get.result',
             id: msg.id,
@@ -111,6 +121,7 @@ export function wireRunMessages(
             tools: details?.tools,
             pendingAsk,
             brief,
+            plan,
           });
           return;
         }

@@ -1,9 +1,23 @@
 ---
 id: 0004
 title: Реализовать роль архитектора (brief.md → plan.md, с собственной kb)
-status: open
+status: done
 created: 2026-04-26
+completed: 2026-04-26
 ---
+
+## Outcome
+
+- Роль архитектора живёт в [src/extension/features/architect-role/](../src/extension/features/architect-role/), кодовые константы — в [roles/architect.ts](../src/extension/entities/run/roles/architect.ts), prompt — в [roles/architect.prompt.ts](../src/extension/entities/run/roles/architect.prompt.ts).
+- Модель: `google/gemini-2.5-pro` через OpenRouter (умнее продактовой flash-lite, как требует issue). Pricing/context-limit — литералами там же.
+- KB: новая роль `architect` в `KNOWLEDGE_SCHEMA` с поддиректориями `modules/`, `decisions/`, `patterns/`, `risks/`. README — [architect-readme.ts](../src/extension/entities/knowledge/architect-readme.ts). Sandbox делает тот же `buildRoleScopedKbTools`, что и у продакта (по role-id).
+- Артефакт: `plan.md` пишется в общую kb (`.agents/knowledge/architect/plans/<runId>-<slug>.md`) аналогично брифу (#0011). Ссылка хранится в `RunMeta.planPath`. `writePlan`/`readPlan` живут в [storage.ts](../src/extension/entities/run/storage.ts).
+- Handoff: продакт в success-ветке `finalizeRun` дёргает `runArchitect({runId, apiKey})` fire-and-forget. Бриф подаётся архитектору как первый user-message (полный текст, без парсинга секций).
+- Resumer зарегистрирован в [activate](../src/extension/index.ts) — ран архитектора с pending `ask_user` поднимается после перезапуска VS Code.
+- IPC: `runs.get.result` теперь несёт `plan?: string` рядом с `brief`. Webview store + RunDetails показывают «План» секцией следом за «Бриф».
+- Sandbox проверки: продактовая роль НЕ может читать `architect/`, и наоборот — обе роли работают через `buildRoleScopedKbTools`, который префиксует пути ролью; cross-role чтение запрещено и в системном промпте архитектора (явно).
+- E2E: добавлен env-флаг `AI_FRONTEND_AGENT_AUTOSTART_ARCHITECT=0`, прибитый в [tests/e2e/fixtures/vscode.ts](../tests/e2e/fixtures/vscode.ts). Без него существующие TC-17..21 ломались бы об архитекторский запрос к OpenRouter без ответа в их сценарии. Прод этой переменной не задаёт — handoff всегда включён.
+- TC-31 — автоматизированный e2e-спек ([tc-31-architect-role-happy-path.spec.ts](../tests/e2e/specs/tc-31-architect-role-happy-path.spec.ts)): продактовая цепочка → handoff → архитектор → `plan.md`. Per-test env override (`AI_FRONTEND_AGENT_AUTOSTART_ARCHITECT=1`) подключается через новую опциональную фикстуру `extraEnv` в [tests/e2e/fixtures/vscode.ts](../tests/e2e/fixtures/vscode.ts).
 
 ## Context
 

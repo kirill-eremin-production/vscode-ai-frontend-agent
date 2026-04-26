@@ -21,7 +21,7 @@
  */
 
 /** Имена ролей, у которых есть собственная kb. */
-export type KnowledgeRole = 'product';
+export type KnowledgeRole = 'product' | 'architect';
 
 /**
  * Описание схемы одной роли. `subdirs` — закрытое множество имён
@@ -59,6 +59,15 @@ export const PRODUCT_SUBDIRS = [
 export type ProductSubdir = (typeof PRODUCT_SUBDIRS)[number];
 
 /**
+ * Поддиректории kb архитектора (issue #0004). Параллельная продактовой
+ * структуре: четыре «жанра» знания, по которым модель и человек
+ * раскладывают артефакты. README с описанием — в [architect-readme](./architect-readme.ts).
+ */
+export const ARCHITECT_SUBDIRS = ['modules', 'decisions', 'patterns', 'risks'] as const;
+
+export type ArchitectSubdir = (typeof ARCHITECT_SUBDIRS)[number];
+
+/**
  * Реестр схем по ролям. Используется `resolveRolePath` для проверки
  * входов и теми ролями, кому нужно перечислить свои поддиректории
  * (например, при инициализации README).
@@ -67,6 +76,10 @@ export const KNOWLEDGE_SCHEMA: Record<KnowledgeRole, RoleSchema> = {
   product: {
     role: 'product',
     subdirs: new Set<string>(PRODUCT_SUBDIRS),
+  },
+  architect: {
+    role: 'architect',
+    subdirs: new Set<string>(ARCHITECT_SUBDIRS),
   },
 };
 

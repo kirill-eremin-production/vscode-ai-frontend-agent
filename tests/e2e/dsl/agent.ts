@@ -133,6 +133,25 @@ export class AgentDriver {
   }
 
   /**
+   * Дождаться появления `plan.md` на диске (артефакт архитектора, #0004).
+   * Симметрично `waitForBrief`: сигнал «архитектор довёл цикл до финала
+   * и записал артефакт». В TC-31 ждём именно его, а не статуса —
+   * архитектор после `writeBrief` продакта проходит чёткий цикл
+   * `running → awaiting_human`, и пик «brief есть, plan ещё нет» — это
+   * нормальное промежуточное состояние, в котором ловить статус было бы
+   * нестабильно.
+   */
+  async waitForPlan(timeoutMs = 30_000): Promise<void> {
+    const deadline = Date.now() + timeoutMs;
+    while (Date.now() < deadline) {
+      const runs = listRuns(this.workspacePath);
+      if (runs.length > 0 && runs[0].plan !== undefined) return;
+      await new Promise((resolve) => setTimeout(resolve, 200));
+    }
+    throw new Error(`[agent] За ${timeoutMs} мс не появился plan.md ни у одного рана`);
+  }
+
+  /**
    * Дождаться, пока статус единственного рана дойдёт до заданного.
    * Альтернатива `waitForBrief` для случаев, когда финал — `failed`
    * (брифа не будет, но статус мы всё равно увидим).

@@ -167,4 +167,11 @@ export interface RunMeta {
    * как обычный файл репозитория. Полный мотив — в issue #0011.
    */
   briefPath?: string;
+  /**
+   * Путь к артефакту архитектора (`plan.md`), относительно корня
+   * workspace. Заполняется `writePlan` при финализации архитекторской
+   * роли (issue #0004). Лежит в `.agents/knowledge/architect/plans/...`
+   * по той же логике, что и `briefPath`.
+   */
+  planPath?: string;
 }

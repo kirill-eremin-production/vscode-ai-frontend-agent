@@ -177,6 +177,27 @@ export function expectBriefHasNoTechnologies(run: RunArtifacts): void {
   }
 }
 
+/**
+ * `plan.md` есть на диске и содержит обязательные секции, объявленные
+ * в роли архитектора (#0004). Симметрично `expectBriefHasRequiredSections`
+ * — порядок здесь не валидируем (это инвариант prompt'а, не контракт
+ * хранилища).
+ */
+export function expectPlanHasRequiredSections(run: RunArtifacts): void {
+  const plan = run.plan;
+  expect(plan, 'Ожидали plan.md на диске').toBeTruthy();
+  const required = [
+    '## Цели',
+    '## Подзадачи',
+    '## Архитектурные решения',
+    '## Риски и граничные случаи',
+    '## Связанные артефакты kb',
+  ];
+  for (const section of required) {
+    expect(plan, `В plan.md должна быть секция "${section}"`).toContain(section);
+  }
+}
+
 /** В knowledge-песочнице лежит файл с заданным содержимым. */
 export function expectKnowledgeFile(
   run: RunArtifacts,

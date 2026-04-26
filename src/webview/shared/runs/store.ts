@@ -22,6 +22,8 @@ import type { ChatMessage, PendingAsk, RunMeta, ToolEvent } from './types';
  *  - `pendingByRun` — кэш «ран → актуальный pendingAsk» для подсветки
  *    в списке. Заполняется при `runs.askUser` broadcast'ах;
  *  - `selectedBrief` — содержимое `brief.md` выбранного, если есть.
+ *  - `selectedPlan` — содержимое `plan.md` выбранного (артефакт
+ *    архитектора, #0004), если есть.
  */
 
 interface RunsState {
@@ -39,6 +41,11 @@ interface RunsState {
    * итерации такого пути нет, но место под него зарезервировано).
    */
   selectedBrief: string | undefined;
+  /**
+   * Содержимое `plan.md` выбранного рана. Заполняется в `runs.get.result`
+   * по той же схеме, что и `selectedBrief` (см. issue #0004).
+   */
+  selectedPlan: string | undefined;
 }
 
 const initialState: RunsState = {
@@ -48,6 +55,7 @@ const initialState: RunsState = {
   pendingAsk: undefined,
   pendingByRun: {},
   selectedBrief: undefined,
+  selectedPlan: undefined,
 };
 
 /**
@@ -124,6 +132,7 @@ export function selectRun(id: string): void {
     // Бриф нового выбранного рана пока неизвестен — сбрасываем,
     // прилетит в `runs.get.result`. Иначе показывали бы бриф предыдущего.
     selectedBrief: undefined,
+    selectedPlan: undefined,
   }));
   send({ type: 'runs.get', id });
 }
@@ -206,6 +215,7 @@ type ExtensionToWebviewMessage =
       tools?: ToolEvent[];
       pendingAsk?: PendingAsk;
       brief?: string;
+      plan?: string;
     }
   | { type: 'runs.created'; meta: RunMeta }
   | { type: 'runs.error'; message: string }
@@ -261,6 +271,7 @@ export function useRunsWiring(): void {
                 selectedDetails: undefined,
                 pendingAsk: undefined,
                 selectedBrief: undefined,
+                selectedPlan: undefined,
               };
             }
             return {
@@ -272,6 +283,7 @@ export function useRunsWiring(): void {
               },
               pendingAsk: data.pendingAsk,
               selectedBrief: data.brief,
+              selectedPlan: data.plan,
             };
           });
           return;

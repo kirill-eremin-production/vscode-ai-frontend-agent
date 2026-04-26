@@ -86,6 +86,8 @@ export interface RunMetaSnapshot {
   usage: UsageAggregate;
   /** Путь к brief.md в kb относительно workspace (после #0011). */
   briefPath?: string;
+  /** Путь к plan.md в kb относительно workspace (после #0004). */
+  planPath?: string;
 }
 
 /** Снимок SessionMeta в той форме, что лежит на диске. */
@@ -179,6 +181,19 @@ export class RunArtifacts {
     const briefPath = this.meta?.briefPath;
     if (!briefPath) return undefined;
     const filePath = path.join(this.workspacePath, briefPath);
+    if (!fs.existsSync(filePath)) return undefined;
+    return fs.readFileSync(filePath, 'utf8');
+  }
+
+  /**
+   * Содержимое `plan.md` рана. Хранится в общей kb
+   * (`.agents/knowledge/architect/plans/...` после #0004); путь —
+   * `meta.planPath` (workspace-relative). Undefined — плана ещё нет.
+   */
+  get plan(): string | undefined {
+    const planPath = this.meta?.planPath;
+    if (!planPath) return undefined;
+    const filePath = path.join(this.workspacePath, planPath);
     if (!fs.existsSync(filePath)) return undefined;
     return fs.readFileSync(filePath, 'utf8');
   }

@@ -48,6 +48,8 @@ const LOOP_FILE = 'loop.json';
 
 /** Подкаталог в kb для брифов продакта (#0011). */
 const PRODUCT_BRIEFS_DIR = path.join('product', 'briefs');
+/** Подкаталог в kb для планов архитектора (#0004). */
+const ARCHITECT_PLANS_DIR = path.join('architect', 'plans');
 
 /**
  * Кастомная ошибка хранилища — на случаях, когда дальнейшая работа
@@ -597,6 +599,60 @@ export async function readBrief(runId: string): Promise<string | undefined> {
   const meta = await readMeta(runId);
   if (!meta?.briefPath) return undefined;
   const absPath = path.join(getWorkspaceRoot(), meta.briefPath);
+  try {
+    return await fs.readFile(absPath, 'utf8');
+  } catch {
+    return undefined;
+  }
+}
+
+/* ── Plan (per-run, stored in shared kb) ────────────────────────── */
+
+/**
+ * Параллель `buildBriefRelativePath` для архитекторского `plan.md`.
+ * Лежит в `.agents/knowledge/architect/plans/<runId>-<slug>.md` по той
+ * же мотивации (#0011): артефакт — общий ресурс проекта, не привязан
+ * к папке конкретного рана.
+ */
+function buildPlanRelativePath(runId: string, title: string): string {
+  const filename = `${runId}-${slugifyTitle(title)}.md`;
+  return path.join(ROOT_DIR_NAME, KNOWLEDGE_DIR_NAME, ARCHITECT_PLANS_DIR, filename);
+}
+
+/**
+ * Атомарно записать `plan.md` в kb и сохранить ссылку в `meta.planPath`.
+ * Возвращает обновлённую RunMeta (для broadcast'а) и итоговый
+ * workspace-relative путь. Параллель [writeBrief](#L567): один вызов
+ * на финализации роли, обновление меты — здесь же.
+ */
+export async function writePlan(
+  runId: string,
+  title: string,
+  content: string
+): Promise<{ run: RunMeta | undefined; planPath: string }> {
+  const relPath = buildPlanRelativePath(runId, title);
+  const absPath = path.join(getWorkspaceRoot(), relPath);
+  await fs.mkdir(path.dirname(absPath), { recursive: true });
+  const tmpPath = `${absPath}.tmp`;
+  await fs.writeFile(tmpPath, content, 'utf8');
+  await fs.rename(tmpPath, absPath);
+
+  const run = await readMeta(runId);
+  if (!run) return { run: undefined, planPath: relPath };
+  const updated: RunMeta = {
+    ...run,
+    planPath: relPath,
+    updatedAt: new Date().toISOString(),
+  };
+  await writeMeta(updated);
+  return { run: updated, planPath: relPath };
+}
+
+/** Прочитать `plan.md` рана. Undefined — `meta.planPath` пуст или файл исчез. */
+export async function readPlan(runId: string): Promise<string | undefined> {
+  const meta = await readMeta(runId);
+  if (!meta?.planPath) return undefined;
+  const absPath = path.join(getWorkspaceRoot(), meta.planPath);
   try {
     return await fs.readFile(absPath, 'utf8');
   } catch {

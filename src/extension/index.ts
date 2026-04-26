@@ -7,6 +7,7 @@ import {
   registerToolLoopSmokeResumer,
 } from '@ext/features/tool-loop-smoke/command';
 import { registerProductResumer } from '@ext/features/product-role';
+import { registerArchitectResumer } from '@ext/features/architect-role';
 
 /**
  * Точка входа extension host.
@@ -65,6 +66,12 @@ export function activate(context: vscode.ExtensionContext) {
   // мог возобновиться, когда пользователь введёт ответ. Регистрация
   // не имеет side-эффектов помимо записи в реестр resumer'ов.
   registerProductResumer();
+
+  // Resumer архитектора (#0004): нужен по тем же причинам, что и
+  // продактовый — ран, остановленный на `ask_user` архитектора, должен
+  // подняться после перезапуска VS Code или нового сообщения от
+  // пользователя (US-10).
+  registerArchitectResumer();
 }
 
 /**

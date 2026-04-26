@@ -37,6 +37,15 @@ export interface VSCodeFixtures {
   workspacePath: string;
   /** Путь к JSON-файлу со сценарием для fake-fetch (создаётся тестом). */
   scenarioPath: string;
+  /**
+   * Доп. env-переменные для `--extensionDevelopmentHost`. Опция
+   * (`{ option: true }`) — переопределяется per-test через
+   * `test.use({ extraEnv: { ... } })`. Используется, например, в TC-31:
+   * там нужно включить авто-передачу рана архитектору
+   * (`AI_FRONTEND_AGENT_AUTOSTART_ARCHITECT=1`), которая по умолчанию
+   * выключена в фикстуре.
+   */
+  extraEnv: Record<string, string>;
 }
 
 /**
@@ -99,7 +108,8 @@ function readVSCodeExecutablePath(): string {
 export async function launchVSCodeApp(
   dirs: IsolatedDirs,
   testInfo: import('@playwright/test').TestInfo,
-  videoSubdir = 'video'
+  videoSubdir = 'video',
+  extraEnv: Record<string, string> = {}
 ): Promise<ElectronApplication> {
   const executablePath = readVSCodeExecutablePath();
   const videoDir = path.join(testInfo.outputDir, videoSubdir);
@@ -123,6 +133,14 @@ export async function launchVSCodeApp(
     env: {
       ...process.env,
       AI_FRONTEND_AGENT_FAKE_OPENROUTER_SCENARIO: dirs.scenarioPath,
+      // По умолчанию выключаем авто-передачу рана архитектору (#0004),
+      // чтобы существующие продактовые TC не ломались об архитекторский
+      // step без сценарных ответов на его модель. Архитекторские TC
+      // (TC-31) выставляют '1' через `test.use({ extraEnv: ... })`.
+      AI_FRONTEND_AGENT_AUTOSTART_ARCHITECT: '0',
+      // Per-test override (после дефолтов, чтобы тест мог переопределить
+      // любую переменную выше).
+      ...extraEnv,
     },
     recordVideo: {
       dir: videoDir,
@@ -195,10 +213,13 @@ export async function closeAndAttachVideos(
 }
 
 export const test = base.extend<VSCodeFixtures>({
-  // eslint-disable-next-line no-empty-pattern -- Playwright fixture API требует destructuring-параметр; зависимостей у electronApp нет.
-  electronApp: async ({}, use, testInfo) => {
+  // Опция-фикстура: значение задаётся через `test.use({ extraEnv: ... })`
+  // в самом спеке. По умолчанию — пусто.
+  extraEnv: [{}, { option: true }],
+
+  electronApp: async ({ extraEnv }, use, testInfo) => {
     const dirs = makeIsolatedDirs();
-    const app = await launchVSCodeApp(dirs, testInfo);
+    const app = await launchVSCodeApp(dirs, testInfo, 'video', extraEnv);
     await use(app);
     await closeAndAttachVideos(app, testInfo);
   },

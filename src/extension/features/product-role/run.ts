@@ -19,6 +19,7 @@ import { broadcast } from '@ext/features/run-management/broadcast';
 import { registerRoleResumer } from '@ext/entities/run/resume-registry';
 import { PRODUCT_MODEL, PRODUCT_ROLE } from '@ext/entities/run/roles/product';
 import { buildProductSystemPrompt } from '@ext/entities/run/roles/product.prompt';
+import { runArchitect } from '@ext/features/architect-role';
 import { buildRoleScopedKbTools } from './role-kb-tools';
 
 /**
@@ -97,7 +98,7 @@ async function appendSystemChatMessage(runId: string, text: string): Promise<voi
  * раздулась длинной markdown-простыней. Полная версия лежит в `brief.md`
  * (UI рендерит её отдельной секцией).
  */
-async function finalizeRun(runId: string, outcome: AgentLoopResult): Promise<void> {
+async function finalizeRun(runId: string, apiKey: string, outcome: AgentLoopResult): Promise<void> {
   if (outcome.kind === 'completed') {
     const brief = outcome.finalContent.trim();
     if (brief.length === 0) {
@@ -123,6 +124,25 @@ async function finalizeRun(runId: string, outcome: AgentLoopResult): Promise<voi
     await appendProductChatMessage(runId, preview);
     const updated = await updateRunStatus(runId, 'awaiting_human');
     if (updated) broadcast({ type: 'runs.updated', meta: updated });
+
+    // Issue #0004: автоматически передаём ран архитектору. Без явного
+    // approve пользователя на этой итерации — кнопки approve/reject
+    // между ролями описаны как отдельная будущая задача. Fire-and-forget:
+    // runArchitect сам управляет статусом (running → awaiting_human),
+    // прогресс пойдёт в webview через broadcast. Любые исключения
+    // ловятся внутри runArchitect и превращаются в `failed`; здесь —
+    // подстраховочный catch на случай совсем экзотического сбоя.
+    //
+    // Опт-аут через env-переменную нужен e2e-фикстуре: продактовые TC
+    // (TC-17..21) проверяют именно продактовый шаг и не должны
+    // спотыкаться об архитекторский запрос к OpenRouter, для которого
+    // в их сценарии нет ответа. Прод этой переменной не задаёт —
+    // авто-handoff всегда включён.
+    if (process.env.AI_FRONTEND_AGENT_AUTOSTART_ARCHITECT !== '0') {
+      void runArchitect({ runId, apiKey }).catch((err) => {
+        console.error('[runArchitect] непойманная ошибка:', err);
+      });
+    }
     return;
   }
 
@@ -181,7 +201,7 @@ export async function runProduct(params: {
     outcome = { kind: 'failed', reason, iterations: 0 };
   }
 
-  await finalizeRun(params.runId, outcome);
+  await finalizeRun(params.runId, params.apiKey, outcome);
 }
 
 /**
@@ -233,7 +253,7 @@ export function registerProductResumer(): void {
       outcome = { kind: 'failed', reason, iterations: 0 };
     }
 
-    await finalizeRun(runId, outcome);
+    await finalizeRun(runId, apiKey, outcome);
   });
 }
 

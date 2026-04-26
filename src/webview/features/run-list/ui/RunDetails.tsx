@@ -26,7 +26,7 @@ import { contextLimitFor, zoneFor } from '@shared/runs/pricing';
  *  - постоянный {@link Composer} для отправки сообщений.
  */
 export function RunDetails() {
-  const { selectedId, selectedDetails, pendingAsk, selectedBrief } = useRunsState();
+  const { selectedId, selectedDetails, pendingAsk, selectedBrief, selectedPlan } = useRunsState();
 
   if (!selectedId) {
     return <div className="run-details run-details--empty">Выберите ран слева.</div>;
@@ -54,6 +54,12 @@ export function RunDetails() {
         <section className="run-details__brief">
           <h3>Бриф</h3>
           <pre className="run-details__brief-content">{selectedBrief}</pre>
+        </section>
+      )}
+      {selectedPlan && (
+        <section className="run-details__brief">
+          <h3>План</h3>
+          <pre className="run-details__brief-content">{selectedPlan}</pre>
         </section>
       )}
       <Timeline chat={chat} tools={tools} />
