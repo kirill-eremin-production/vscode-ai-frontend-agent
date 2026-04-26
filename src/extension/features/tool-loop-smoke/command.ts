@@ -83,15 +83,22 @@ async function createSmokeRun(prompt: string): Promise<RunMeta> {
   const id =
     `smoke-${now.replace(/[:.]/g, '').replace(/-/g, '').slice(0, 15)}-` +
     crypto.randomBytes(3).toString('hex');
-  const meta: RunMeta = {
+  const baseMeta = {
     id,
     title: `[smoke] ${prompt.slice(0, 40)}`,
     prompt,
-    status: 'running',
+    status: 'running' as const,
     createdAt: now,
     updatedAt: now,
   };
-  await initRunDir(meta);
+  // initRunDir создаёт user↔agent:smoke сессию и возвращает RunMeta
+  // с проставленным `activeSessionId`. После этого все append-операции
+  // без явного sessionId автоматически идут в эту сессию.
+  const meta = await initRunDir(baseMeta, {
+    kind: 'user-agent',
+    participants: [{ kind: 'user' }, { kind: 'agent', role: SMOKE_ROLE }],
+    status: 'running',
+  });
   await appendChatMessage(meta.id, {
     id: crypto.randomBytes(6).toString('hex'),
     from: 'user',

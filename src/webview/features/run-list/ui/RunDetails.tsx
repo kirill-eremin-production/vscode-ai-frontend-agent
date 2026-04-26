@@ -1,23 +1,29 @@
 import { useMemo, useState } from 'react';
 import { openFile, sendFinalizeSignal, sendUserMessage, useRunsState } from '@shared/runs/store';
-import type { ChatMessage, RunStatus, ToolEvent } from '@shared/runs/types';
+import type {
+  ChatMessage,
+  RunMeta,
+  RunStatus,
+  SessionSummary,
+  ToolEvent,
+} from '@shared/runs/types';
+import { contextLimitFor, zoneFor } from '@shared/runs/pricing';
 
 /**
  * Карточка деталей выбранного рана — правая колонка экрана.
  *
- * Рендерит:
+ * Структура (сверху вниз):
  *  - заголовок и статус;
- *  - блок «Бриф» (если есть `brief.md`);
- *  - баннер активного `ask_user`-вопроса (если ран в `awaiting_user_input`);
- *  - единую ленту: chat.jsonl + tools.jsonl мерджатся по timestamp,
- *    каждое событие — своя «карточка» (см. {@link Timeline});
- *  - постоянный composer для отправки сообщения пользователя.
- *
- * Composer работает в обоих режимах через единый IPC `runs.user.message`:
- *  - `awaiting_user_input` → текст пойдёт ответом на текущий ask_user;
- *  - `awaiting_human` / `failed` → текст продолжит диалог (US-10);
- *  - `running` / `draft` → Send disabled (UX-защита, extension тоже
- *    отбросит на стороне маршрутизации).
+ *  - {@link RunUsageHeader} — суммарная стоимость рана, индикатор
+ *    заполненности контекста и кнопка «Сжать» (US-12);
+ *  - блок «Запрос» (исходный prompt пользователя);
+ *  - {@link SessionTabs} — список сессий рана; на Phase 1 (#0008)
+ *    всегда одна, но заводим вкладочный UI заранее, чтобы #0013
+ *    (компактификация) подключился без правки разметки;
+ *  - {@link AskUserBanner} — баннер pending-вопроса (если есть);
+ *  - блок «Бриф» (если `brief.md` уже на диске);
+ *  - единая лента chat + tools (см. {@link Timeline});
+ *  - постоянный {@link Composer} для отправки сообщений.
  */
 export function RunDetails() {
   const { selectedId, selectedDetails, pendingAsk, selectedBrief } = useRunsState();
@@ -26,8 +32,6 @@ export function RunDetails() {
     return <div className="run-details run-details--empty">Выберите ран слева.</div>;
   }
   if (!selectedDetails) {
-    // selectedId уже есть, но `runs.get.result` ещё не пришёл —
-    // или ран был удалён вручную в файловой системе.
     return <div className="run-details run-details--loading">Загружаю…</div>;
   }
 
@@ -39,21 +43,14 @@ export function RunDetails() {
       <div className="run-details__status">
         Статус: <code>{meta.status}</code>
       </div>
+      <RunUsageHeader meta={meta} />
       <section className="run-details__prompt">
         <h3>Запрос</h3>
         <pre>{meta.prompt}</pre>
       </section>
-      {pendingAsk && (
-        // Баннер с текущим вопросом — рендерим над лентой, чтобы
-        // пользователь не «терял» его в потоке tool_call'ов. Сам
-        // ответ вводится в composer ниже (форма не дублируется).
-        <AskUserBanner question={pendingAsk.question} context={pendingAsk.context} />
-      )}
+      <SessionTabs sessions={meta.sessions} activeSessionId={meta.activeSessionId} />
+      {pendingAsk && <AskUserBanner question={pendingAsk.question} context={pendingAsk.context} />}
       {selectedBrief && (
-        // Бриф рендерим как сырой markdown в <pre> — внешний markdown-рендер
-        // тянуть не хочется ради одного блока. Когда роли начнут давать
-        // больше markdown-контента (план архитектора и т.п.), вынесем
-        // общий компонент с подсветкой.
         <section className="run-details__brief">
           <h3>Бриф</h3>
           <pre className="run-details__brief-content">{selectedBrief}</pre>
@@ -62,6 +59,112 @@ export function RunDetails() {
       <Timeline chat={chat} tools={tools} />
       <Composer runId={meta.id} status={meta.status} hasPendingAsk={pendingAsk !== undefined} />
     </div>
+  );
+}
+
+/**
+ * Шапка с агрегатами рана: total cost, токены контекста, индикатор-бар
+ * и (disabled на Phase 1) кнопка «Сжать контекст».
+ *
+ * Контекст-индикатор: считаем `lastTotalTokens` относительно soft-лимита
+ * модели из локального `contextLimitFor`. Зона (green/yellow/red)
+ * подсвечивает срочность сжатия. Если модель неизвестна — бар не
+ * рисуем, показываем «контекст: ?» (TC-27).
+ */
+function RunUsageHeader(props: { meta: RunMeta }) {
+  const usage = props.meta.usage;
+  const limit = contextLimitFor(usage.lastModel);
+  const ratio = limit && limit > 0 ? Math.min(usage.lastTotalTokens / limit, 1) : 0;
+  const zone = zoneFor(ratio);
+  const cost = formatCost(usage.costUsd);
+  return (
+    <section className="run-details__usage">
+      <div className="run-details__usage-row">
+        <span className="run-details__usage-label">Стоимость:</span>
+        <span className="run-details__usage-value" title="Сумма по всем сессиям рана">
+          {cost}
+        </span>
+        <span className="run-details__usage-sep">·</span>
+        <span className="run-details__usage-label">Токенов (in/out):</span>
+        <span className="run-details__usage-value">
+          {formatTokens(usage.inputTokens)} / {formatTokens(usage.outputTokens)}
+        </span>
+      </div>
+      <div className="run-details__usage-row">
+        <span className="run-details__usage-label">Контекст:</span>
+        {limit ? (
+          <>
+            <div
+              className={`run-details__context-bar run-details__context-bar--${zone}`}
+              role="progressbar"
+              aria-valuemin={0}
+              aria-valuemax={limit}
+              aria-valuenow={usage.lastTotalTokens}
+              title={`${usage.lastTotalTokens.toLocaleString('ru-RU')} / ${limit.toLocaleString('ru-RU')} токенов`}
+            >
+              <div
+                className="run-details__context-fill"
+                style={{ width: `${(ratio * 100).toFixed(1)}%` }}
+              />
+            </div>
+            <span className="run-details__usage-value">
+              {formatTokens(usage.lastTotalTokens)} / {formatTokens(limit)}
+            </span>
+          </>
+        ) : (
+          <span
+            className="run-details__usage-value"
+            title="Лимит контекста для этой модели не зафиксирован"
+          >
+            ?
+          </span>
+        )}
+        <button
+          className="run-details__compact-btn"
+          type="button"
+          disabled
+          title="Ручная компактификация контекста — будет в #0013. Кнопка пока неактивна."
+        >
+          Сжать контекст
+        </button>
+      </div>
+    </section>
+  );
+}
+
+/**
+ * Полоска вкладок сессий рана. На Phase 1 (#0008) сессий всегда одна
+ * («Session 1»), но компонент уже отрисовывает строку вкладок —
+ * чтобы #0013 (компактификация) сразу же показывал старую и новую
+ * сессии без правки markup.
+ *
+ * Кликабельность отключена для всех вкладок, кроме активной — переход
+ * между сессиями требует поддержки read-only ленты, что сделаем
+ * следующим тикетом.
+ */
+function SessionTabs(props: { sessions: SessionSummary[]; activeSessionId: string }) {
+  if (props.sessions.length === 0) return null;
+  return (
+    <nav className="run-details__sessions" aria-label="Сессии рана">
+      {props.sessions.map((session, index) => {
+        const isActive = session.id === props.activeSessionId;
+        const label = `Session ${index + 1}`;
+        return (
+          <button
+            key={session.id}
+            type="button"
+            className={`run-details__session-tab${isActive ? ' run-details__session-tab--active' : ''}`}
+            disabled={!isActive}
+            title={`${label} · статус ${session.status} · ${formatTokens(session.usage.inputTokens + session.usage.outputTokens)} токенов`}
+          >
+            {label}
+            {session.status === 'compacted' && (
+              <span className="run-details__session-badge"> compacted</span>
+            )}
+          </button>
+        );
+      })}
+    </nav>
   );
 }
 
@@ -88,12 +191,8 @@ function AskUserBanner(props: { question: string; context?: string }) {
 
 /**
  * Composer — постоянное поле ввода сообщения пользователя.
- *
- * Видим во всех статусах кроме `draft`. Send активен только в
- * `awaiting_user_input` / `awaiting_human` / `failed` — в `running`
- * пользователь видит подсказку, что нужно дождаться шага агента.
- * Сложного queueing «отправь, когда running закончится» намеренно
- * не делаем: проще и предсказуемее дождаться руками.
+ * Видим во всех статусах, кроме `draft`. Send активен только когда
+ * extension реально может принять сообщение.
  */
 function Composer(props: { runId: string; status: RunStatus; hasPendingAsk: boolean }) {
   const [draft, setDraft] = useState('');
@@ -109,13 +208,9 @@ function Composer(props: { runId: string; status: RunStatus; hasPendingAsk: bool
     const trimmed = draft.trim();
     if (trimmed.length === 0 || !sendable) return;
     sendUserMessage(props.runId, trimmed);
-    // Очищаем сразу: сообщение уже ушло в extension, оптимистично
-    // пустим composer и подождём отрисовки в ленте через broadcast.
     setDraft('');
   };
 
-  // Подсказка-плейсхолдер зависит от того, что мы сейчас отправляем —
-  // пользователь должен видеть смысл своего ввода без чтения статуса.
   const placeholder = props.hasPendingAsk
     ? 'Ответ на вопрос агента…'
     : props.status === 'awaiting_human'
@@ -131,7 +226,6 @@ function Composer(props: { runId: string; status: RunStatus; hasPendingAsk: bool
         value={draft}
         onChange={(event) => setDraft(event.target.value)}
         onKeyDown={(event) => {
-          // Cmd/Ctrl+Enter — отправить (как в большинстве чат-форм).
           if ((event.metaKey || event.ctrlKey) && event.key === 'Enter') {
             event.preventDefault();
             submit();
@@ -150,9 +244,6 @@ function Composer(props: { runId: string; status: RunStatus; hasPendingAsk: bool
         {props.hasPendingAsk ? 'Ответить' : 'Отправить'}
       </button>
       {props.hasPendingAsk && (
-        // US-13: явный сигнал «достаточно вопросов». Доступен только пока
-        // на ране висит pending ask_user — иначе кнопке нечего «прерывать».
-        // Текст ответа extension подставит сам (PRODUCT_FINALIZE_MARKER).
         <button
           className="run-details__composer-finalize"
           type="button"
@@ -173,13 +264,7 @@ function Composer(props: { runId: string; status: RunStatus; hasPendingAsk: bool
 
 /**
  * Единая лента chat + tools. Сортируется по timestamp `at` стабильным
- * `sort` (Array.prototype.sort стабилен в Node ≥12 / V8 7.0+, что
- * покрывает все актуальные runtime'ы webview).
- *
- * Уникальный ключ вычисляется отдельно: у `ChatMessage` есть `id`,
- * у `ToolEvent` — нет, но связка `kind + at + tool_call_id?` практически
- * уникальна в рамках одного рана, т.к. agent-loop пишет события строго
- * последовательно с новым ISO-таймстампом на каждом шаге.
+ * `sort` (Array.prototype.sort стабилен в Node ≥12 / V8 7.0+).
  */
 function Timeline(props: { chat: ChatMessage[]; tools: ToolEvent[] }) {
   const items = useMemo(() => mergeTimeline(props.chat, props.tools), [props.chat, props.tools]);
@@ -208,7 +293,6 @@ function Timeline(props: { chat: ChatMessage[]; tools: ToolEvent[] }) {
   );
 }
 
-/** Один элемент ленты — либо чат, либо tool-событие. */
 type TimelineItem =
   | { kind: 'chat'; key: string; at: string; message: ChatMessage }
   | { kind: 'tool'; key: string; at: string; event: ToolEvent };
@@ -219,10 +303,6 @@ function mergeTimeline(chat: ChatMessage[], tools: ToolEvent[]): TimelineItem[] 
     items.push({ kind: 'chat', key: `chat:${message.id}`, at: message.at, message });
   }
   tools.forEach((event, index) => {
-    // У ToolEvent нет id, но `at` + `kind` + индекс в исходном массиве
-    // даёт стабильный ключ для React: даже если у двух событий совпадёт
-    // ISO-таймстамп (теоретически возможно при batch-write), индекс
-    // гарантирует уникальность в пределах массива tools.
     items.push({
       kind: 'tool',
       key: `tool:${event.kind}:${event.at}:${index}`,
@@ -230,15 +310,10 @@ function mergeTimeline(chat: ChatMessage[], tools: ToolEvent[]): TimelineItem[] 
       event,
     });
   });
-  // Стабильный sort по timestamp. Сообщения с одинаковым `at` сохраняют
-  // относительный порядок (chat-первым, потом tools), что естественно
-  // для смешанной ленты: пользовательский ввод обычно «опережает»
-  // tool-результаты на той же миллисекунде.
   items.sort((left, right) => left.at.localeCompare(right.at));
   return items;
 }
 
-/** Простой пузырь чат-сообщения: автор + время + текст. */
 function ChatBubble(props: { message: ChatMessage }) {
   return (
     <>
@@ -252,14 +327,10 @@ function ChatBubble(props: { message: ChatMessage }) {
 
 /**
  * Карточка tool-события. Три ветки рендера:
- *  - assistant: показываем tool_calls как «🛠 модель позвала X (args)».
- *    Голый assistant.content без tool_calls в ленту не выводим — он уже
- *    дублируется в `chat.jsonl` (продакт пишет превью брифа), и второе
- *    отображение визуально дублирует. Если же у assistant есть И content,
- *    И tool_calls — content пропускаем, всё равно в чате будет.
- *  - tool_result: «↪ X → result/error». Если в результате есть `path`
- *    (наш kb.write возвращает `{ ok, path }`), путь — кликабельный.
- *  - system: муттированная строка-диагностика.
+ *  - assistant: tool_calls + per-step usage badge (стоимость и токены
+ *    конкретно этого шага — US-12 «каждое assistant подписано стоимостью»);
+ *  - tool_result: «↪ X → result/error» с возможной ссылкой на файл;
+ *  - system: маленькая строка-диагностика.
  */
 function ToolEntry(props: { event: ToolEvent }) {
   const { event } = props;
@@ -268,13 +339,25 @@ function ToolEntry(props: { event: ToolEvent }) {
   if (event.kind === 'assistant') {
     if (!event.tool_calls || event.tool_calls.length === 0) {
       // Чистый текст assistant'а уже виден в чате (через chat.jsonl
-      // от роли). В технической ленте не дублируем, чтобы не было
-      // визуального шума.
+      // от роли). В технической ленте не дублируем — но usage badge
+      // всё равно покажем, если есть: пользователю важно видеть
+      // стоимость и финального шага.
+      if (event.usage) {
+        return (
+          <div className="run-details__tool-header">
+            🛠 финальный ответ модели · {time}
+            <UsageBadge usage={event.usage} />
+          </div>
+        );
+      }
       return null;
     }
     return (
       <>
-        <div className="run-details__tool-header">🛠 модель вызывает тулы · {time}</div>
+        <div className="run-details__tool-header">
+          🛠 модель вызывает тулы · {time}
+          {event.usage && <UsageBadge usage={event.usage} />}
+        </div>
         {event.tool_calls.map((call) => (
           <ToolCallCard key={call.id} name={call.name} argumentsJson={call.arguments} />
         ))}
@@ -322,11 +405,27 @@ function ToolEntry(props: { event: ToolEvent }) {
   );
 }
 
-/** Карточка одного tool_call: имя + свёрнутый JSON-argumentов. */
+/**
+ * Маленький badge с usage конкретного шага. Стоимость показываем в USD
+ * (или «—» если costUsd null), токены — в формате «in/out».
+ */
+function UsageBadge(props: {
+  usage: NonNullable<Extract<ToolEvent, { kind: 'assistant' }>['usage']>;
+}) {
+  const cost = formatCost(props.usage.costUsd);
+  return (
+    <span
+      className="run-details__usage-badge"
+      title={`Модель: ${props.usage.model} · prompt ${props.usage.promptTokens} · completion ${props.usage.completionTokens}`}
+    >
+      {' '}
+      · {cost} · {formatTokens(props.usage.promptTokens)}/
+      {formatTokens(props.usage.completionTokens)}
+    </span>
+  );
+}
+
 function ToolCallCard(props: { name: string; argumentsJson: string }) {
-  // Аргументы пришли строкой от модели. Пытаемся распарсить и pretty-print'ить;
-  // если не вышло (модель прислала невалидный JSON, что бывает) — показываем
-  // как есть, без падения.
   let pretty = props.argumentsJson;
   try {
     pretty = JSON.stringify(JSON.parse(props.argumentsJson), null, 2);
@@ -343,32 +442,16 @@ function ToolCallCard(props: { name: string; argumentsJson: string }) {
   );
 }
 
-/**
- * Извлечь путь к файлу из произвольного tool_result. Сейчас знаем только
- * `kb.write` (отдаёт `{ ok, path }`), но проверка по форме «есть строковое
- * поле path» накроет и будущие тулы того же контракта (например, write_brief).
- */
 function extractFilePath(result: unknown): string | undefined {
   if (typeof result !== 'object' || result === null) return undefined;
   const candidate = (result as { path?: unknown }).path;
   return typeof candidate === 'string' && candidate.length > 0 ? candidate : undefined;
 }
 
-/**
- * Резолвить путь, который тул отдал относительно kb-корня, в путь от
- * корня workspace. `kb.write` пишет в `.agents/knowledge/`, поэтому
- * именно этот префикс и добавляем. Когда появятся другие тулы с другими
- * корнями — расширим эту функцию (или вынесем мэппинг в отдельный модуль).
- */
 function toWorkspacePath(relativeFromKb: string): string {
   return `.agents/knowledge/${relativeFromKb}`;
 }
 
-/**
- * JSON.stringify с защитой от циклов и слишком длинных результатов —
- * лента не должна превращаться в стену текста при больших ответах
- * `kb.read`/`kb.grep`.
- */
 function stringifyForPreview(value: unknown): string {
   let serialized: string;
   try {
@@ -380,4 +463,23 @@ function stringifyForPreview(value: unknown): string {
     return `${serialized.slice(0, 4000)}\n…\n[обрезано: ${serialized.length} символов всего]`;
   }
   return serialized;
+}
+
+/**
+ * Форматировать стоимость в USD. `null` показываем как «—» с подписью
+ * «тариф не задан» (через title в шапке) — это TC-27 в #0008: модель
+ * без зафиксированного тарифа не должна показываться как «$0».
+ */
+function formatCost(value: number | null): string {
+  if (value === null) return '—';
+  if (value === 0) return '$0';
+  if (value < 0.01) return `$${value.toFixed(4)}`;
+  return `$${value.toFixed(3)}`;
+}
+
+/** Компактное форматирование токенов: 1234 → «1.2k», 123 → «123». */
+function formatTokens(n: number): string {
+  if (n < 1000) return n.toString();
+  if (n < 1_000_000) return `${(n / 1000).toFixed(1)}k`;
+  return `${(n / 1_000_000).toFixed(2)}M`;
 }

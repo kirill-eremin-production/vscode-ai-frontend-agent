@@ -140,6 +140,120 @@ pre {
   gap: 12px;
 }
 
+/* run-details: usage header (cost + context indicator) */
+.run-details__usage {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 8px;
+  background: var(--vscode-editorWidget-background, var(--vscode-editor-background));
+  border: 1px solid var(--vscode-panel-border, transparent);
+  border-radius: 2px;
+}
+
+.run-details__usage-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 11px;
+  flex-wrap: wrap;
+}
+
+.run-details__usage-label {
+  opacity: 0.7;
+}
+
+.run-details__usage-value {
+  font-weight: 600;
+}
+
+.run-details__usage-sep {
+  opacity: 0.4;
+}
+
+.run-details__context-bar {
+  flex: 1;
+  min-width: 80px;
+  height: 6px;
+  background: var(--vscode-input-background, rgba(255, 255, 255, 0.06));
+  border-radius: 3px;
+  overflow: hidden;
+}
+
+.run-details__context-fill {
+  height: 100%;
+  transition: width 0.2s ease;
+}
+
+.run-details__context-bar--green .run-details__context-fill {
+  background: var(--vscode-charts-green, #4caf50);
+}
+
+.run-details__context-bar--yellow .run-details__context-fill {
+  background: var(--vscode-charts-yellow, #ffb300);
+}
+
+.run-details__context-bar--red .run-details__context-fill {
+  background: var(--vscode-errorForeground, #f48771);
+}
+
+.run-details__compact-btn {
+  margin-left: auto;
+  background: transparent;
+  color: var(--vscode-button-secondaryForeground, var(--vscode-foreground));
+  border: 1px solid var(--vscode-button-border, var(--vscode-contrastBorder, transparent));
+  padding: 4px 10px;
+  font-size: 11px;
+  cursor: pointer;
+}
+
+.run-details__compact-btn:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+/* run-details: per-step usage badge in timeline */
+.run-details__usage-badge {
+  font-size: 10px;
+  opacity: 0.75;
+  font-weight: 500;
+}
+
+/* run-details: session tabs (под шапкой, над лентой) */
+.run-details__sessions {
+  display: flex;
+  gap: 4px;
+  padding: 4px 0;
+  border-bottom: 1px solid var(--vscode-panel-border, transparent);
+}
+
+.run-details__session-tab {
+  background: transparent;
+  color: var(--vscode-foreground);
+  border: 1px solid transparent;
+  padding: 4px 10px;
+  font-size: 11px;
+  cursor: pointer;
+  opacity: 0.6;
+}
+
+.run-details__session-tab:disabled {
+  cursor: default;
+}
+
+.run-details__session-tab--active {
+  background: var(--vscode-list-activeSelectionBackground);
+  color: var(--vscode-list-activeSelectionForeground);
+  border-color: var(--vscode-focusBorder);
+  opacity: 1;
+}
+
+.run-details__session-badge {
+  font-size: 9px;
+  opacity: 0.7;
+  margin-left: 4px;
+}
+
 .run-details--empty,
 .run-details--loading {
   font-size: 12px;

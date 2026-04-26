@@ -2,12 +2,24 @@ import * as fs from 'node:fs';
 import * as path from 'node:path';
 
 /**
- * Read-only акcессор к артефактам одного рана: `.agents/runs/<id>/...`
- * + `.agents/knowledge/...`.
+ * Read-only акcессор к артефактам одного рана.
  *
- * Все методы синхронные и читают диск каждый раз — для тестов это
- * дешевле логики кеширования и гарантирует свежие данные после
- * любого действия.
+ * Layout (после #0008):
+ *   .agents/runs/<runId>/
+ *     meta.json              # RunMeta (включает activeSessionId, usage, sessions[])
+ *     brief.md               # один на ран (опциональный)
+ *     sessions/<sessionId>/
+ *       meta.json            # SessionMeta
+ *       chat.jsonl
+ *       tools.jsonl
+ *       loop.json
+ *
+ * `chat`, `toolEvents` по умолчанию читают **активную** сессию из RunMeta.
+ * Когда #0013 (компактификация) подключится, тесты, которым нужно сравнить
+ * содержимое старых сессий, могут передать sessionId явно.
+ *
+ * Все методы синхронные и читают диск каждый раз — для тестов это дешевле
+ * любой логики кеширования и гарантирует свежие данные после действия.
  */
 
 /** Одна запись из `tools.jsonl`. */
@@ -20,6 +32,18 @@ export interface ToolEvent {
   error?: string;
   content?: string | null;
   message?: string;
+  /**
+   * Usage assistant-шага (#0008). Заполняется agent-loop'ом, если
+   * OpenRouter вернул `usage`. Тесты на cost-tracking проверяют именно
+   * это поле + агрегаты в meta.json.
+   */
+  usage?: {
+    model: string;
+    promptTokens: number;
+    completionTokens: number;
+    totalTokens: number;
+    costUsd: number | null;
+  };
 }
 
 /** Одна запись из `chat.jsonl`. */
@@ -30,12 +54,27 @@ export interface ChatEntry {
   text: string;
 }
 
-/**
- * Минимальный снимок `meta.json` — поля, которые тестам реально нужно
- * проверять. `status` оставлен строкой, а не enum, чтобы не дублировать
- * `RunStatus` из extension'а в e2e-DSL (граница между ними — IPC, а
- * не TypeScript-импорт).
- */
+/** Агрегат usage — зеркало `UsageAggregate` из extension/types.ts. */
+export interface UsageAggregate {
+  inputTokens: number;
+  outputTokens: number;
+  costUsd: number | null;
+  lastTotalTokens: number;
+  lastModel: string | null;
+}
+
+/** Описание сессии для шапки RunMeta. */
+export interface SessionSummary {
+  id: string;
+  kind: 'user-agent' | 'agent-agent';
+  status: string;
+  createdAt: string;
+  updatedAt: string;
+  parentSessionId?: string;
+  usage: UsageAggregate;
+}
+
+/** Снимок RunMeta в той форме, что лежит на диске. */
 export interface RunMetaSnapshot {
   id: string;
   title: string;
@@ -43,6 +82,22 @@ export interface RunMetaSnapshot {
   status: string;
   createdAt: string;
   updatedAt: string;
+  activeSessionId: string;
+  sessions: SessionSummary[];
+  usage: UsageAggregate;
+}
+
+/** Снимок SessionMeta в той форме, что лежит на диске. */
+export interface SessionMetaSnapshot {
+  id: string;
+  runId: string;
+  kind: 'user-agent' | 'agent-agent';
+  participants: Array<{ kind: 'user' } | { kind: 'agent'; role: string }>;
+  parentSessionId?: string;
+  status: string;
+  createdAt: string;
+  updatedAt: string;
+  usage: UsageAggregate;
 }
 
 export class RunArtifacts {
@@ -56,20 +111,56 @@ export class RunArtifacts {
     return path.join(this.workspacePath, '.agents', 'runs', this.runId);
   }
 
-  /** Распарсенные события `tools.jsonl`. */
-  get toolEvents(): ToolEvent[] {
-    return readJsonl<ToolEvent>(path.join(this.runDir, 'tools.jsonl'));
+  /** Папка конкретной сессии. */
+  private sessionDir(sessionId: string): string {
+    return path.join(this.runDir, 'sessions', sessionId);
   }
 
-  /** Распарсенный `chat.jsonl`. */
+  /** Папка активной сессии (по `meta.activeSessionId`). undefined = меты нет. */
+  private activeSessionDir(): string | undefined {
+    const meta = this.meta;
+    if (!meta) return undefined;
+    return this.sessionDir(meta.activeSessionId);
+  }
+
+  /** Распарсенные события `tools.jsonl` активной сессии. */
+  get toolEvents(): ToolEvent[] {
+    return this.toolEventsForSession(this.meta?.activeSessionId);
+  }
+
+  /** Распарсенный `chat.jsonl` активной сессии. */
   get chat(): ChatEntry[] {
-    return readJsonl<ChatEntry>(path.join(this.runDir, 'chat.jsonl'));
+    return this.chatForSession(this.meta?.activeSessionId);
+  }
+
+  /** События конкретной сессии (для тестов на компактификацию #0013). */
+  toolEventsForSession(sessionId: string | undefined): ToolEvent[] {
+    if (!sessionId) return [];
+    return readJsonl<ToolEvent>(path.join(this.sessionDir(sessionId), 'tools.jsonl'));
+  }
+
+  /** chat.jsonl конкретной сессии. */
+  chatForSession(sessionId: string | undefined): ChatEntry[] {
+    if (!sessionId) return [];
+    return readJsonl<ChatEntry>(path.join(this.sessionDir(sessionId), 'chat.jsonl'));
+  }
+
+  /** SessionMeta активной сессии. undefined = меты нет. */
+  get sessionMeta(): SessionMetaSnapshot | undefined {
+    return this.sessionMetaForSession(this.meta?.activeSessionId);
+  }
+
+  /** SessionMeta конкретной сессии. */
+  sessionMetaForSession(sessionId: string | undefined): SessionMetaSnapshot | undefined {
+    if (!sessionId) return undefined;
+    const filePath = path.join(this.sessionDir(sessionId), 'meta.json');
+    if (!fs.existsSync(filePath)) return undefined;
+    return JSON.parse(fs.readFileSync(filePath, 'utf8')) as SessionMetaSnapshot;
   }
 
   /**
-   * `meta.json` рана. Используется проверками статуса (продакт переводит
-   * ран в `awaiting_human` после успеха или `failed` при ошибке —
-   * без чтения меты этого не увидеть).
+   * `meta.json` рана. Содержит активную сессию, агрегат usage и список
+   * сессий — тесты на cost-tracking (TC-25, TC-27) ходят сюда.
    */
   get meta(): RunMetaSnapshot | undefined {
     const filePath = path.join(this.runDir, 'meta.json');
@@ -77,11 +168,16 @@ export class RunArtifacts {
     return JSON.parse(fs.readFileSync(filePath, 'utf8')) as RunMetaSnapshot;
   }
 
-  /** Содержимое `brief.md`, если уже на диске. Undefined — роль не дописала. */
+  /** Содержимое `brief.md`. Brief лежит в корне рана (один на ран). */
   get brief(): string | undefined {
     const filePath = path.join(this.runDir, 'brief.md');
     if (!fs.existsSync(filePath)) return undefined;
     return fs.readFileSync(filePath, 'utf8');
+  }
+
+  /** Существует ли в активной сессии папка с loop.json. Для durability-тестов. */
+  hasActiveSession(): boolean {
+    return this.activeSessionDir() !== undefined && fs.existsSync(this.activeSessionDir()!);
   }
 
   /** Достать содержимое файла из knowledge-песочницы. */
@@ -98,11 +194,6 @@ export class RunArtifacts {
   }
 }
 
-/**
- * Найти все раны в workspace и вернуть accessor'ы. Полезно, когда
- * тест ожидает ровно один ран и хочет до него добраться без guessing'а
- * id'а.
- */
 export function listRuns(workspacePath: string): RunArtifacts[] {
   const runsDir = path.join(workspacePath, '.agents', 'runs');
   if (!fs.existsSync(runsDir)) return [];

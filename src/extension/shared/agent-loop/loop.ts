@@ -1,5 +1,7 @@
 import { chat, type ChatMessage, type ToolDefinitionWire } from '@ext/shared/openrouter/client';
-import { recordToolEvent } from '@ext/features/run-management/broadcast';
+import { recordToolEvent, broadcast } from '@ext/features/run-management/broadcast';
+import { addUsageToActiveSession } from '@ext/entities/run/storage';
+import { costFor } from '@ext/shared/pricing/registry';
 import { validateToolArgs } from './validator';
 import type { ToolDefinition, ToolRegistry } from './types';
 
@@ -175,7 +177,34 @@ export async function runAgentLoop(params: AgentLoopParams): Promise<AgentLoopRe
     const assistant = response.message;
     history.push(assistant);
 
-    // Лог: одна запись на каждый assistant-ответ, со всеми tool_calls.
+    // Usage этого шага: рассчитываем стоимость и эмбеддим в assistant-
+    // событие, чтобы UI мог показать per-step cost в ленте без отдельного
+    // join'а с агрегатами. Параллельно — обновляем session/run aggregate
+    // (для шапки рана, total cost и индикатора заполненности контекста).
+    // Если OpenRouter не вернул usage — событие пишем без поля, агрегат
+    // не трогаем; ран не ломаем (это сознательный выбор: usage — данные
+    // observability, отсутствие не должно валить работу модели).
+    const usagePayload = response.usage
+      ? {
+          model: response.model,
+          promptTokens: response.usage.promptTokens,
+          completionTokens: response.usage.completionTokens,
+          totalTokens: response.usage.totalTokens,
+          costUsd: costFor(response.model, response.usage),
+        }
+      : undefined;
+
+    if (usagePayload) {
+      const updated = await addUsageToActiveSession(params.runId, usagePayload);
+      // Broadcast обновлённой меты сразу — UI видит новые агрегаты в той
+      // же тиковой пачке, что и tool.appended ниже. Без этого индикатор
+      // контекста и total cost обновлялись бы только при следующем
+      // явном `runs.get` от webview.
+      if (updated.run) broadcast({ type: 'runs.updated', meta: updated.run });
+    }
+
+    // Лог: одна запись на каждый assistant-ответ, со всеми tool_calls
+    // и usage'ем (если был).
     await recordToolEvent(params.runId, {
       kind: 'assistant',
       at: new Date().toISOString(),
@@ -189,6 +218,7 @@ export async function runAgentLoop(params: AgentLoopParams): Promise<AgentLoopRe
             })),
           }
         : {}),
+      ...(usagePayload ? { usage: usagePayload } : {}),
     });
 
     const toolCalls = assistant.tool_calls;

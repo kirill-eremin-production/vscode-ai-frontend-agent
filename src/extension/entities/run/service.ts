@@ -90,20 +90,28 @@ export async function createRun(
   const title = await generateTitle(apiKey, trimmed);
 
   const now = new Date().toISOString();
-  const meta: RunMeta = {
+  const baseMeta = {
     id: generateRunId(),
     title,
     prompt: trimmed,
-    status: 'draft',
+    status: 'draft' as const,
     createdAt: now,
     updatedAt: now,
   };
 
-  await initRunDir(meta);
+  // initRunDir создаёт первую (и пока единственную) сессию рана —
+  // user ↔ agent:product. Возвращает уже полную RunMeta с
+  // `activeSessionId` и пустыми usage-агрегатами.
+  const meta = await initRunDir(baseMeta, {
+    kind: 'user-agent',
+    participants: [{ kind: 'user' }, { kind: 'agent', role: 'product' }],
+    status: 'draft',
+  });
 
   // Первое сообщение в чате — исходный запрос пользователя. Кладём его
   // именно сюда, чтобы единая лента рана начиналась с понятной точки
   // отсчёта, и любые роли могли её читать как обычное сообщение.
+  // appendChatMessage без явного sessionId пишет в активную сессию.
   const firstMessage: ChatMessage = {
     id: crypto.randomBytes(6).toString('hex'),
     from: 'user',

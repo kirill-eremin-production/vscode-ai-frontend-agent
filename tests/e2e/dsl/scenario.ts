@@ -28,6 +28,20 @@ export interface FakeScenario {
 }
 
 /**
+ * Опции, общие для всех фейковых ответов: usage и (опционально) переопределение
+ * `model`. Usage нужен для cost/context-тестов (#0008): без него agent-loop
+ * не пишет per-step usage в assistant-событие, и проверять нечего.
+ *
+ * `model` полезен для TC-27 («неизвестный тариф»): сценарий возвращает
+ * `model: 'unknown/whatever'`, и pricing registry отдаёт `null` — стоимость
+ * становится null, а ран продолжает работать.
+ */
+export interface FakeResponseExtras {
+  usage?: { prompt_tokens?: number; completion_tokens?: number; total_tokens?: number };
+  model?: string;
+}
+
+/**
  * Ответ модели — assistant просит вызвать тулы и сразу останавливается.
  *
  * Для удобства принимает массив пар `[name, args]`: модель может
@@ -35,9 +49,12 @@ export interface FakeScenario {
  * исполняет по очереди.
  */
 export function fakeToolCalls(
-  calls: Array<{ name: string; args: Record<string, unknown>; id?: string }>
+  calls: Array<{ name: string; args: Record<string, unknown>; id?: string }>,
+  extras: FakeResponseExtras = {}
 ): FakeResponse {
   return {
+    ...(extras.model ? { model: extras.model } : {}),
+    ...(extras.usage ? { usage: extras.usage } : {}),
     choices: [
       {
         message: {
@@ -63,17 +80,20 @@ export function fakeToolCalls(
 export function fakeToolCall(
   name: string,
   args: Record<string, unknown>,
-  id?: string
+  id?: string,
+  extras: FakeResponseExtras = {}
 ): FakeResponse {
-  return fakeToolCalls([{ name, args, id }]);
+  return fakeToolCalls([{ name, args, id }], extras);
 }
 
 /**
  * Финальный assistant-ответ — обычный текст, без tool_calls.
  * Этот ответ говорит agent-loop'у «всё, цикл завершён».
  */
-export function fakeFinalAnswer(text: string): FakeResponse {
+export function fakeFinalAnswer(text: string, extras: FakeResponseExtras = {}): FakeResponse {
   return {
+    ...(extras.model ? { model: extras.model } : {}),
+    ...(extras.usage ? { usage: extras.usage } : {}),
     choices: [
       {
         message: { role: 'assistant', content: text },

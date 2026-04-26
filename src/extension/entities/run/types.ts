@@ -2,27 +2,32 @@
  * Типы предметной области «Run» (один прогон команды агентов
  * над одной задачей пользователя).
  *
- * Разделены на «персистентную» (на диске в `.agents/runs/<id>/`)
- * и «сводную» части. На этом этапе UI почти не различает их —
- * мы возвращаем целиком `RunMeta`, — но иметь типы отдельно
- * проще, когда в run появятся artefact-ссылки и tool-логи.
+ * Ран — это обёртка над одной или несколькими **сессиями**. На Phase 1
+ * (#0008) сессия всегда одна (initial). После #0013 ручная компактификация
+ * создаёт новую сессию из summary, старая остаётся read-only.
+ *
+ * Что лежит в ране vs в сессии:
+ *  - run-level: `meta.json` (id, title, prompt, активная сессия, агрегаты),
+ *    `brief.md` — продукт работы, один на ран.
+ *  - session-level: `chat.jsonl`, `tools.jsonl`, `loop.json`, свой
+ *    `meta.json` со статусом и usage этой сессии.
+ *
+ * Зачем: подготовка к мульти-агентскому режиму (#0012) и к компактификации
+ * (#0013) без последующего ломания storage. Тип SessionMeta уже несёт
+ * `participants` и `kind` — обе фичи строятся поверх без миграций.
  */
 
 /**
- * Возможные состояния рана. На текущем этапе используются только
- * `draft` (создан, ещё ничего не запускалось) и `failed`, остальные —
- * заготовки на будущие итерации FSM.
- */
-/**
- * Возможные состояния рана.
+ * Возможные состояния рана/сессии.
  * - `draft` — создан, но цикл ещё не запускался.
  * - `running` — agent-loop активен.
  * - `awaiting_user_input` — agent-loop остановлен на `ask_user`, ждём ответа.
- * - `awaiting_human` — роль завершила свой шаг, ждёт approve пользователя
- *   (не путать с `awaiting_user_input`: там вопрос изнутри цикла, тут —
- *   контрольная точка между ролями).
+ * - `awaiting_human` — роль завершила свой шаг, ждёт approve пользователя.
  * - `done` — финальный успех.
  * - `failed` — фатальная ошибка цикла, продолжать нельзя.
+ * - `compacted` — сессия закрыта компактификацией (#0013), её содержимое
+ *   доступно read-only через табы. На уровне `RunMeta.status` это значение
+ *   не используется (ран всегда отражает статус активной сессии).
  */
 export type RunStatus =
   | 'draft'
@@ -30,44 +35,123 @@ export type RunStatus =
   | 'awaiting_user_input'
   | 'awaiting_human'
   | 'done'
-  | 'failed';
+  | 'failed'
+  | 'compacted';
 
 /**
- * Сообщение в общей ленте чата рана. Сейчас пишется только
- * исходный prompt пользователя; роли начнут добавлять свои
- * сообщения, когда появится FSM.
+ * Сообщение в общей ленте рана.
+ *
+ * `from` — строка, потому что роли расширяемы: `user`, `agent:product`,
+ * `agent:system`, в будущем `agent:architect` и т.д. Enum'ом сделать —
+ * требует править тип при каждой новой роли.
  */
 export interface ChatMessage {
-  /** Уникальный id сообщения; нужен для стабильного React-ключа. */
   id: string;
-  /**
-   * Источник сообщения. `user` — это человек, `agent:<role>` —
-   * любая из ролей. Строковое поле, а не enum, чтобы добавление
-   * новой роли не требовало правки этого типа.
-   */
   from: string;
-  /** ISO-строка времени появления сообщения. */
   at: string;
-  /** Тело сообщения — пока plaintext. */
   text: string;
 }
 
 /**
- * Метаданные рана — то, что хранится в `meta.json` рядом с чатом.
- * Всё, что нужно для списка ранов в UI, должно лежать тут, чтобы
- * не приходилось читать chat.jsonl ради заголовка.
+ * Усреднённый счётчик usage, накопленный за серию assistant-ответов.
+ *
+ * Поля:
+ *  - `inputTokens` / `outputTokens` — суммарные токены за всю историю.
+ *  - `costUsd` — суммарная стоимость в USD; `null`, если хотя бы один
+ *    шаг был на модели без зафиксированного тарифа (UI показывает «—»,
+ *    чтобы не давать пользователю ложные ноли).
+ *  - `lastTotalTokens` — totalTokens (input+output) последнего assistant-
+ *    ответа. Это лучшая локальная оценка «сколько весит контекст»: при
+ *    следующем шаге модель получит на вход примерно столько же.
+ *  - `lastModel` — какая модель ответила последней. Нужно UI, чтобы
+ *    подтянуть правильный context-limit для индикатора заполненности.
+ */
+export interface UsageAggregate {
+  inputTokens: number;
+  outputTokens: number;
+  costUsd: number | null;
+  lastTotalTokens: number;
+  lastModel: string | null;
+}
+
+/** Стартовое значение для свежей сессии/рана. */
+export const EMPTY_USAGE: UsageAggregate = {
+  inputTokens: 0,
+  outputTokens: 0,
+  costUsd: 0,
+  lastTotalTokens: 0,
+  lastModel: null,
+};
+
+/**
+ * Участник сессии. Сейчас комбинации: `[user, agent:product]`. После
+ * #0012 появятся `[agent:product, agent:architect]` (agent-agent) и
+ * `[user, agent:product, agent:architect]` (hybrid после вмешательства).
+ *
+ * Хранится в SessionMeta вместо одиночного «role», потому что одна
+ * сессия может обслуживать сразу нескольких агентов (мост между ними).
+ */
+export type Participant = { kind: 'user' } | { kind: 'agent'; role: string };
+
+/** Тип сессии. На Phase 1 всегда `'user-agent'`. */
+export type SessionKind = 'user-agent' | 'agent-agent';
+
+/**
+ * Метаданные сессии — лежат в `sessions/<sessionId>/meta.json`.
+ *
+ * `status` здесь — каноническое значение для этой сессии. В RunMeta.status
+ * хранится копия активной сессии — это денормализация для скорости рендера
+ * списка ранов (UI не должен лезть в N session-meta ради статусов).
+ */
+export interface SessionMeta {
+  id: string;
+  runId: string;
+  kind: SessionKind;
+  participants: Participant[];
+  /** Родительская сессия — заполняется только после компактификации (#0013). */
+  parentSessionId?: string;
+  status: RunStatus;
+  createdAt: string;
+  updatedAt: string;
+  usage: UsageAggregate;
+}
+
+/**
+ * Лёгкое описание сессии для шапки RunMeta. Достаточно для отрисовки
+ * табов сессий: id, статус, времена, usage; полный SessionMeta UI
+ * запрашивает уже отдельно при выборе таба.
+ */
+export interface SessionSummary {
+  id: string;
+  kind: SessionKind;
+  status: RunStatus;
+  createdAt: string;
+  updatedAt: string;
+  parentSessionId?: string;
+  usage: UsageAggregate;
+}
+
+/**
+ * Метаданные рана — `meta.json` в корне `runs/<id>/`.
+ *
+ * `activeSessionId` — id «текущей» сессии. На Phase 1 = id единственной
+ * созданной при init; после #0013 — id новейшей сессии после compact.
+ *
+ * `sessions[]` — лёгкий список для UI-табов; полный SessionMeta живёт
+ * рядом в `sessions/<sid>/meta.json`. Дублирование сознательное:
+ * читать N файлов ради списка табов — слишком много I/O.
+ *
+ * `usage` — суммарный usage по всем сессиям. Удобно показывать в шапке
+ * рана независимо от того, какая сессия сейчас выбрана в UI.
  */
 export interface RunMeta {
-  /** Идентификатор рана; одновременно — имя папки в `.agents/runs/`. */
   id: string;
-  /** Короткий заголовок (3–6 слов), который генерит cheap-модель. */
   title: string;
-  /** Исходный запрос пользователя; нужен для отображения и для ролей. */
   prompt: string;
-  /** Текущее состояние FSM. */
   status: RunStatus;
-  /** ISO-строка времени создания. */
   createdAt: string;
-  /** ISO-строка времени последнего обновления. */
   updatedAt: string;
+  activeSessionId: string;
+  sessions: SessionSummary[];
+  usage: UsageAggregate;
 }
