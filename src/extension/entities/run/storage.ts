@@ -82,7 +82,13 @@ function getRunsRoot(): string {
   return path.join(getWorkspaceRoot(), ROOT_DIR_NAME, RUNS_DIR_NAME);
 }
 
-function getRunDir(runId: string): string {
+/**
+ * Абсолютный путь к директории рана. Экспортируется, чтобы соседние
+ * модули хранилища (например, meeting-request.ts из #0049) могли
+ * складывать свои jsonl/json-артефакты в ту же папку рана, не
+ * дублируя константы с именами поддиректорий.
+ */
+export function getRunDir(runId: string): string {
   return path.join(getRunsRoot(), runId);
 }
 
