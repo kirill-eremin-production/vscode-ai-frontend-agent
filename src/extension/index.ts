@@ -9,6 +9,8 @@ import {
 import { registerProductResumer } from '@ext/features/product-role';
 import { registerArchitectResumer } from '@ext/features/architect-role';
 import { registerProgrammerResumer } from '@ext/features/programmer-role';
+import { listAllMeta } from '@ext/entities/run/storage';
+import { triggerResolvePending } from '@ext/team/meeting-resolver';
 
 /**
  * Точка входа extension host.
@@ -79,6 +81,31 @@ export function activate(context: vscode.ExtensionContext) {
   // подняться после перезапуска VS Code или нового сообщения от
   // пользователя.
   registerProgrammerResumer();
+
+  // Триггер meeting-resolver на активации (#0050): после рестарта VS Code
+  // в ранах могут оставаться pending meeting-request'ы, которые не
+  // успели разрезолвиться в предыдущей сессии редактора. Прогоняем по
+  // всем известным ранам последовательно — на этой итерации их единицы,
+  // I/O бюджет ничтожный. Fire-and-forget внутри `triggerResolvePending`:
+  // ошибки логируются, активация не падает.
+  void resolvePendingForAllRuns();
+}
+
+/**
+ * Прогнать координатор встреч по всем ранам workspace'а. Вынесено
+ * в отдельную функцию, чтобы `activate` оставался синхронным фасадом —
+ * VS Code ожидает быстрый возврат, а резолвер делает несколько fs-чтений.
+ */
+async function resolvePendingForAllRuns(): Promise<void> {
+  try {
+    const runs = await listAllMeta();
+    for (const run of runs) {
+      await triggerResolvePending(run.id);
+    }
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    console.error(`[activate] resolvePendingForAllRuns failed: ${message}`);
+  }
 }
 
 /**

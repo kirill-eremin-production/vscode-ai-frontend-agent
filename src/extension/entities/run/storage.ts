@@ -748,6 +748,20 @@ export async function updateRunStatus(
   return setSessionStatus(runId, sessionId, status);
 }
 
+/**
+ * Статусы, которые означают «роль завершила свой шаг». Координатор
+ * встреч (#0050) на этом сигнале просыпается и пытается резолвить
+ * pending meeting-request'ы к освободившимся ролям. `awaiting_human`
+ * включён осознанно: формально это «ждём пользователя», но last-message
+ * в чате — от агентской роли, значит роль idle и может принять встречу.
+ */
+const SESSION_COMPLETION_STATUSES: ReadonlySet<RunStatus> = new Set<RunStatus>([
+  'done',
+  'failed',
+  'compacted',
+  'awaiting_human',
+]);
+
 /** Перевести конкретную сессию в новый статус. */
 export async function setSessionStatus(
   runId: string,
@@ -761,7 +775,32 @@ export async function setSessionStatus(
     status,
     updatedAt: new Date().toISOString(),
   };
-  return persistSessionUpdate(runId, updated);
+  const persisted = await persistSessionUpdate(runId, updated);
+  // Триггер resolver'а (#0050): «возможно, кто-то освободился, проверь
+  // pending-заявки». Запуск fire-and-forget — не блокируем status-write
+  // на ожидании резолва (резолв сам пишет в storage и broadcast'ит
+  // отдельно). Lazy-импорт нужен, чтобы избежать циклической зависимости
+  // на загрузке модуля: meeting-resolver импортирует storage.
+  if (persisted && SESSION_COMPLETION_STATUSES.has(status)) {
+    void runMeetingResolverTrigger(runId);
+  }
+  return persisted;
+}
+
+/**
+ * Динамически подгрузить координатор встреч и дёрнуть его. Вынесено в
+ * отдельную функцию, чтобы (1) держать одно место lazy-import'а, (2)
+ * безопасно глотать ошибки: сбой резолвера не должен валить запись
+ * статуса сессии в storage.
+ */
+async function runMeetingResolverTrigger(runId: string): Promise<void> {
+  try {
+    const module = await import('../../team/meeting-resolver');
+    await module.triggerResolvePending(runId);
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    console.error(`[storage] meeting-resolver trigger failed for ${runId}: ${message}`);
+  }
 }
 
 /**

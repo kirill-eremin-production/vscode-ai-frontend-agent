@@ -1032,3 +1032,56 @@ Acceptance (закрепление контракта `meeting-request.ts`):
   (никакого in-memory кэша): результат идентичен.
 - Битые строки (невалидный JSON, не наша схема) пропускаются — список
   показывает всё валидное, не падает целиком.
+
+## US-49. (инфраструктурно) meeting-resolver — резолв pending meeting-request'ов
+
+Задача #0050 — координатор встреч: видит pending meeting-request'ы
+(созданные #0049 и будущими тулами #0051) и автоматически переводит их
+в реальные сессии-комнаты, как только адресат освободился. Параллельно
+ловит простейший deadlock «A зовёт B, B зовёт A» и помечает обе заявки
+`failed`, чтобы они не висели вечно.
+
+Прямого пользовательского сценария на этой итерации нет: тулы агента,
+порождающие заявки, появятся в #0051; UI-уведомления — в #0052.
+Закрепляем контракт `resolvePending(runId)` тестами и документируем
+триггеры, чтобы #0051/#0052 строились на устойчивом фундаменте.
+
+Acceptance (закрепление контракта `resolvePending` / `triggerResolvePending`):
+
+- `resolvePending(runId)` возвращает массив `ResolveResult` —
+  discriminated union из трёх веток: `{kind:'resolved', requestId,
+sessionId}`, `{kind:'failed', requestId, reason}`, `{kind:'still_pending',
+requestId, reason}`. Никаких других значений.
+- Если в ране нет pending-заявок — возвращается пустой массив (быстрый
+  путь, без чтения сессий).
+- Pending-заявка к роли в состоянии `idle` (по контракту `roleStateFor`
+  из #0048) резолвится: создаётся новая сессия `kind:'agent-agent'` с
+  `participants: [requesterRole, requesteeRole]` и `prev:
+[contextSessionId]`; в `chat.jsonl` этой сессии появляется ровно одно
+  сообщение от `agent:${requesterRole}` с текстом из `request.message`.
+  Заявка переводится в `resolved` с `resolvedSessionId` равным id новой
+  сессии.
+- Pending-заявка к роли в состоянии `busy`/`awaiting_input` остаётся в
+  `pending`: никаких новых сессий и никаких записей в журнал
+  `meeting-requests.jsonl` не создаётся.
+- Bidirectional pending (`A→B` и `B→A` одновременно) детектируется до
+  снятия snapshot'а: обе заявки переводятся в `failed` с
+  `failureReason`, явно упоминающим обе вовлечённые роли и слово
+  `deadlock`. В output пишется `console.warn` с тем же reason'ом.
+- Несколько pending'ов к одной и той же роли: за один проход
+  резолвится самый старый по `createdAt`; остальные получают
+  `still_pending` с reason'ом «older request not yet resolved» и ждут
+  до следующего триггера.
+- Один проход резолвит максимум одну заявку на роль-адресата: после
+  резолва эта роль становится busy в новой сессии, и в том же проходе
+  больше встреч на неё не назначается.
+- Триггеры `triggerResolvePending` (безопасная обёртка над
+  `resolvePending`):
+  - При активации расширения — для каждого рана из `listAllMeta()`
+    (поднимаем заявки, оставшиеся pending после рестарта VS Code).
+  - При завершении любой сессии — статус-апдейт в `setSessionStatus`
+    на одном из `done`/`failed`/`compacted`/`awaiting_human` запускает
+    резолвер (lazy-импорт исключает циклическую зависимость storage ↔
+    meeting-resolver). На каждом сообщении не вызывается осознанно.
+  - Ошибки резолвера не валят активацию и не валят запись статуса —
+    `triggerResolvePending` глотает исключения и пишет в output.
