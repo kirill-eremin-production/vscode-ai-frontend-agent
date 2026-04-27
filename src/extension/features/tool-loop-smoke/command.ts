@@ -118,7 +118,13 @@ async function finalizeRun(
   outcome:
     | { kind: 'completed'; finalContent: string; iterations: number }
     | { kind: 'failed'; reason: string; iterations: number }
+    | { kind: 'paused'; reason: string; meetingRequestId: string; iterations: number }
 ): Promise<void> {
+  // #0051: smoke-роль не использует team.invite/team.escalate, поэтому
+  // ветка `paused` сюда прийти не должна — но TS-дискриминатор требует
+  // явной обработки. Если когда-нибудь окажемся здесь — это диагностика
+  // регрессии: smoke-реестр не должен включать пишущие в meeting-request тулы.
+  if (outcome.kind === 'paused') return;
   if (outcome.kind === 'completed') {
     const message = {
       id: crypto.randomBytes(6).toString('hex'),

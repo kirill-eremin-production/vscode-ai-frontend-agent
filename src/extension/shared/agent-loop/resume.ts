@@ -30,6 +30,32 @@ export type ResumeIntent =
       kind: 'continue';
       /** Новое сообщение пользователя для продолжения диалога. */
       userMessage: string;
+    }
+  | {
+      /**
+       * #0051: пробуждение agent-loop'а инициатора meeting-request'а
+       * после того, как координатор встреч (#0050) перевёл заявку в
+       * `resolved`. История восстанавливается стандартно (system + user
+       * + tools.jsonl), а в хвост дописывается system-сообщение «получен
+       * ответ от <targetRole>, см. сессию <link>», чтобы модель
+       * естественно продолжила работу с учётом нового контекста.
+       *
+       * Отдельный `kind` (а не расширение `answer`) выбран осознанно:
+       * resolver не отвечает за конкретный tool_call — queued-результат
+       * уже корректно записан в `tools.jsonl` до паузы. Притворяться
+       * tool_result'ом без реального вызова было бы хуже.
+       */
+      kind: 'meeting_resolved';
+      /** id заявки, которую только что резолвили. */
+      meetingRequestId: string;
+      /** Роль адресата — попадает в текст системного сообщения. */
+      targetRole: string;
+      /**
+       * id сессии-комнаты, созданной резолвером. Модель упомянёт его
+       * в системном сообщении — пользователю и логу полезно видеть,
+       * куда именно ушла встреча.
+       */
+      resolvedSessionId: string;
     };
 
 /**
@@ -139,13 +165,26 @@ export function reconstructHistory(
       tool_call_id: intent.pendingToolCallId,
       content: JSON.stringify({ result: { answer: intent.userAnswer } }),
     });
-  } else {
+  } else if (intent.kind === 'continue') {
     // Хвост: новое сообщение пользователя в `awaiting_human`/`failed`.
     // Модель видит его ровно как дополнительную user-реплику после своего
     // финального assistant-ответа — и продолжает диалог естественно.
     history.push({
       role: 'user',
       content: intent.userMessage,
+    });
+  } else {
+    // #0051: pause завершилась резолвом meeting-request'а. Кладём
+    // system-сообщение, чтобы модель увидела, что ожидание закончилось,
+    // и сама решила, что делать дальше (как правило — закругляться по
+    // текущему вопросу с учётом полученного контекста). Текст коротко
+    // упоминает targetRole и id новой сессии-комнаты — этого достаточно,
+    // чтобы модель не путала с обычной репликой пользователя.
+    history.push({
+      role: 'system',
+      content:
+        `Получен ответ от ${intent.targetRole}, см. сессию ${intent.resolvedSessionId}. ` +
+        `Meeting-request ${intent.meetingRequestId} зарезолвлен.`,
     });
   }
 
@@ -273,6 +312,25 @@ function appendEventAsMessage(history: ChatMessage[], event: ToolEvent): void {
     return;
   }
   // 'system' — диагностика для людей, в историю модели не уходит.
+}
+
+/**
+ * Короткий маркер для `tools.jsonl`, чтобы при разборе лога было
+ * понятно, по какому intent'у произошёл resume. Каждая роль зовёт его
+ * перед {@link logResume} — содержимое строки одинаково по форме во
+ * всех ролях, чтобы парсеры лога/диффы между ранами были стабильны.
+ */
+export function buildResumeMarker(intent: ResumeIntent): string {
+  if (intent.kind === 'answer') {
+    return `Resume after VS Code restart, answering tool_call ${intent.pendingToolCallId}`;
+  }
+  if (intent.kind === 'continue') {
+    return 'Resume by user follow-up message in chat';
+  }
+  return (
+    `Resume after meeting-request ${intent.meetingRequestId} resolved ` +
+    `(reply from ${intent.targetRole}, session ${intent.resolvedSessionId})`
+  );
 }
 
 /**

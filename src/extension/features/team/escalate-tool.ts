@@ -7,11 +7,14 @@ import {
 } from '@ext/entities/run/storage';
 import { broadcast } from '@ext/features/run-management/broadcast';
 import { HIERARCHY, areAdjacent, rolesBetween, type Role } from '@ext/team/hierarchy';
+import { buildRoleStateSnapshot } from '@ext/team/run-snapshot';
+import { roleStateFor } from '@ext/entities/run/role-state';
+import { createMeetingRequest } from '@ext/entities/run/meeting-request';
 import type { ToolDefinition } from '@ext/shared/agent-loop';
 import type { ChatMessage, Participant } from '@ext/entities/run/types';
 
 /**
- * Тул `team.escalate` (#0038) — приглашение через уровни иерархии.
+ * Тул `team.escalate` (#0038 + интеграция с meeting-request из #0051).
  *
  * В отличие от `team.invite` (#0037), который работает только между
  * соседями (`product ↔ architect`, `architect ↔ programmer`), escalate
@@ -20,10 +23,19 @@ import type { ChatMessage, Participant } from '@ext/entities/run/types';
  * быть архитектор — escalate сам докидывает все промежуточные уровни
  * в сессию, чтобы цепочка коммуникации не рвалась.
  *
+ * #0051: перед `pullIntoRoom` строим snapshot ролей рана и проверяем
+ * каждую роль в цепочке (кроме caller'а). Если хотя бы одна не `idle`
+ * — не «телепортируем» никого, а создаём ОДИН `MeetingRequest` к
+ * `targetRole` с тем же сообщением. Промежуточные роли подтянет резолвер
+ * (#0050) при резолве комнаты — он прогоняет `rolesBetween(requester,
+ * requestee)` и pullIntoRoom их, если они `idle` к моменту резолва.
+ *
+ * Если все роли в цепочке `idle` — поведение прежнее:
+ *
  * Цепочка собирается ОДИН раз до первого `pullIntoRoom`:
  * `[caller, ...rolesBetween(caller, target), target]`. Это важно для
- * читаемости: потенциальные ошибки на полпути (см. ниже про частичное
- * состояние) не зависят от того, сколько раз мы пересчитывали цепочку.
+ * читаемости: потенциальные ошибки на полпути не зависят от того,
+ * сколько раз мы пересчитывали цепочку.
  *
  * Сообщение пишется один раз, ПОСЛЕ всех `pullIntoRoom`. Логика —
  * чтобы все приглашённые увидели один и тот же контекст с момента
@@ -33,17 +45,7 @@ import type { ChatMessage, Participant } from '@ext/entities/run/types';
  *
  * Если `caller === target` или роли соседние — escalate не нужен:
  * возвращаем ошибку с подсказкой о правильном пути (`team.invite` или
- * прямой ответ). Это парный к INVITE_THROUGH_LEVEL_ERROR сигнал
- * модели — чтобы не было «обратного» паттерна, когда модель шлёт
- * escalate соседу.
- *
- * Без интеграции с meeting-request (#0051): если кто-то из цепочки
- * busy — всё равно тащим в комнату.
- *
- * Допустимое частичное состояние: если `pullIntoRoom` посредине упал
- * (fs-сбой, уход рана из активного), цепочка может остаться неполной
- * — комната с не всеми участниками, без сообщения от caller'а.
- * Диагностика и компенсация — в будущем (см. Implementation notes #0038).
+ * прямой ответ).
  */
 
 /** Сообщение об ошибке при попытке эскалировать без необходимости. */
@@ -56,19 +58,33 @@ export interface TeamEscalateArgs {
   message: string;
 }
 
-/** Результат тула — то, что попадает в `tool_result` для модели. */
-export interface TeamEscalateResult {
-  sessionId: string;
-  participants: Participant[];
-  /**
-   * Полная цепочка `[caller, ...between, target]`, по которой шёл
-   * escalate. Включает caller'а как первый элемент, чтобы модель
-   * могла однозначно понять, кого «довели до комнаты» этим вызовом
-   * (caller-то уже был внутри, но семантически он часть цепочки
-   * эскалации).
-   */
-  chain: Role[];
-}
+/**
+ * Результат тула — discriminated union по `kind` (зеркало
+ * `TeamInviteResult`):
+ *  - `invited` — все роли в цепочке были `idle`, цепочка собрана,
+ *    сообщение записано. `chain` отдаёт полный путь.
+ *  - `queued` — кто-то в цепочке был занят, создан meeting-request к
+ *    `targetRole`. Промежуточных подтянет резолвер.
+ */
+export type TeamEscalateResult =
+  | {
+      kind: 'invited';
+      sessionId: string;
+      participants: Participant[];
+      /**
+       * Полная цепочка `[caller, ...between, target]`, по которой шёл
+       * escalate. Включает caller'а как первый элемент, чтобы модель
+       * могла однозначно понять, кого «довели до комнаты» этим вызовом
+       * (caller-то уже был внутри, но семантически он часть цепочки
+       * эскалации).
+       */
+      chain: Role[];
+    }
+  | {
+      kind: 'queued';
+      meetingRequestId: string;
+      requesteeRole: Role;
+    };
 
 /**
  * Построить тул `team.escalate` для конкретной роли-инициатора.
@@ -85,8 +101,9 @@ export function buildTeamEscalateTool(caller: Role): ToolDefinition<TeamEscalate
       'Эскалировать через уровни иерархии: пригласить целевую роль вместе со всеми ' +
       'промежуточными уровнями (например, programmer→product тащит ещё и architect). ' +
       'Используй, когда между тобой и целевой ролью есть посредник. Для соседей — team.invite. ' +
-      'Аргументы: targetRole — конечный адресат, message — текст сообщения от тебя, который ' +
-      'увидят все приглашённые с момента входа в комнату.',
+      'Если хотя бы один из участников цепочки занят, тул создаст meeting-request ' +
+      'и поставит тебя на паузу до резолва. Аргументы: targetRole — конечный адресат, ' +
+      'message — текст сообщения от тебя, который увидят все приглашённые с момента входа в комнату.',
     schema: {
       type: 'object',
       properties: {
@@ -115,9 +132,12 @@ export function buildTeamEscalateTool(caller: Role): ToolDefinition<TeamEscalate
  * Тело handler'а вынесено отдельно, чтобы тесты могли звать его
  * напрямую, не дёргая весь tool-loop. Шаги:
  *  1) защита от ненужного escalate (`caller === target` либо соседи);
- *  2) построить цепочку (один раз, до первого pullIntoRoom);
- *  3) поочерёдно `pullIntoRoom` для каждой роли цепочки кроме caller'а;
- *  4) записать `message` от имени caller'а в сессию;
+ *  2) построить цепочку (один раз, до проверки snapshot'а);
+ *  3) #0051 — проверить занятость каждой роли цепочки кроме caller'а;
+ *     если хотя бы одна занята → создать единственный meeting-request
+ *     к targetRole, вернуть queued;
+ *  4) иначе — поочерёдно `pullIntoRoom` для каждой роли цепочки кроме
+ *     caller'а, записать `message` от имени caller'а в сессию;
  *  5) вернуть актуальный snapshot участников + цепочку.
  */
 async function escalateHandler(
@@ -155,6 +175,29 @@ async function escalateHandler(
   // возвращаемого `chain` (см. описание TeamEscalateResult).
   const chain: Role[] = [caller, ...rolesBetween(caller, targetRole), targetRole];
 
+  // #0051: проверяем все роли цепочки кроме caller'а. Если ХОТЯ БЫ
+  // одна не idle — escalate уходит в очередь meeting-request'ов.
+  // Адресат заявки — конечный target, посредников подтянет резолвер
+  // (см. meeting-resolver.ts, шаг pullIntermediates).
+  const snapshot = await buildRoleStateSnapshot(runId);
+  const someoneBusy = chain.some((role) => {
+    if (role === caller) return false;
+    return roleStateFor(role, snapshot).kind !== 'idle';
+  });
+  if (someoneBusy) {
+    const request = await createMeetingRequest(runId, {
+      requesterRole: caller,
+      requesteeRole: targetRole,
+      contextSessionId: sessionId,
+      message,
+    });
+    return {
+      kind: 'queued',
+      meetingRequestId: request.id,
+      requesteeRole: targetRole,
+    };
+  }
+
   // Тащим в комнату всех, кроме caller'а — он уже там по построению
   // (escalate вызывается из его tool-loop'а, в его активной сессии).
   // pullIntoRoom идемпотентен: если посредник уже добавлен прошлым
@@ -187,6 +230,7 @@ async function escalateHandler(
   // стабильным независимо от ветки.
   const finalSession = await readSessionMeta(runId, sessionId);
   return {
+    kind: 'invited',
     sessionId,
     participants: finalSession?.participants ?? [],
     chain,

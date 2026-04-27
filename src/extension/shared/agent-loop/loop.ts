@@ -75,7 +75,47 @@ export type AgentLoopResult =
       reason: string;
       /** Сколько итераций успело пройти до фейла. */
       iterations: number;
+    }
+  | {
+      kind: 'paused';
+      /**
+       * Причина паузы — на этой итерации единственная: тул вернул
+       * `{kind: 'queued'}` (см. `team.invite` / `team.escalate` из
+       * #0051). Поле оставлено отдельно, чтобы вызывающий код мог
+       * показать пользователю «ждём ответа от <X>», а не парсить
+       * meeting-request id.
+       */
+      reason: string;
+      /**
+       * id meeting-request'а, на ответ которого ждёт инициатор. Нужен
+       * resumer'у роли при пробуждении (#0051): по нему можно отличить
+       * resume «после ответа на ask_user» от «после резолва встречи»
+       * и собрать правильный хвост истории.
+       */
+      meetingRequestId: string;
+      /** Сколько итераций реально потрачено до паузы. */
+      iterations: number;
     };
+
+/**
+ * Маркер паузы в результате тула: если handler вернул объект формы
+ * `{kind: 'queued', meetingRequestId: '...'}`, agent-loop ловит его
+ * после выполнения tool_call'ов и завершает цикл `paused`-веткой.
+ *
+ * Контракт нарочно построен на уровне agent-loop'а, а не «специальным
+ * исключением» из тула: тул должен корректно записаться в `tool_result`
+ * (модель видит, что её вызов выполнился), а уже loop наблюдает форму
+ * результата и принимает решение остановиться. Так пауза остаётся
+ * прозрачной и для resume-трассировки в `tools.jsonl`.
+ */
+function extractQueuedMeetingRequestId(result: unknown): string | undefined {
+  if (result === null || typeof result !== 'object') return undefined;
+  const candidate = result as { kind?: unknown; meetingRequestId?: unknown };
+  if (candidate.kind !== 'queued' || typeof candidate.meetingRequestId !== 'string') {
+    return undefined;
+  }
+  return candidate.meetingRequestId;
+}
 
 /**
  * Преобразовать реестр в формат `tools[]` для OpenRouter-запроса.
@@ -236,6 +276,14 @@ export async function runAgentLoop(params: AgentLoopParams): Promise<AgentLoopRe
     // Выполняем каждый tool_call по очереди. Параллелизм пока не делаем —
     // это упрощает отладку и ничего не ломает (большинство наших тулов
     // дешёвые и быстрые). Параллелизм добавим, если станет узким местом.
+    //
+    // Если хоть один тул вернул `{kind: 'queued'}` (#0051) — фиксируем
+    // первый такой meetingRequestId и ВСЁ РАВНО доводим текущий пакет
+    // tool_call'ов до конца: модели нужно увидеть результаты всех её
+    // вызовов в этом шаге (иначе на resume tool_call/tool_result
+    // распарилось бы). А вот следующую итерацию уже не делаем — выходим
+    // в `paused`-ветку.
+    let pausedRequestId: string | undefined;
     for (const call of toolCalls) {
       const tool = params.tools.get(call.function.name);
       if (!tool) {
@@ -270,6 +318,32 @@ export async function runAgentLoop(params: AgentLoopParams): Promise<AgentLoopRe
           ? { error: exec.errorForLog }
           : { result: exec.resultForLog }),
       });
+
+      // Берём id первого queued-результата и больше не перезаписываем —
+      // модель в одном шаге обычно вызывает один team.invite/escalate.
+      // Если по какой-то причине вызвала несколько — пробуждать будем
+      // ровно одну заявку (резолвер сам разберётся с очередью).
+      if (pausedRequestId === undefined && exec.errorForLog === undefined) {
+        const requestId = extractQueuedMeetingRequestId(exec.resultForLog);
+        if (requestId !== undefined) {
+          pausedRequestId = requestId;
+        }
+      }
+    }
+
+    if (pausedRequestId !== undefined) {
+      const reason = `meeting-request ${pausedRequestId} pending — agent-loop paused`;
+      await recordToolEvent(params.runId, {
+        kind: 'system',
+        at: new Date().toISOString(),
+        message: reason,
+      });
+      return {
+        kind: 'paused',
+        reason,
+        meetingRequestId: pausedRequestId,
+        iterations: iteration,
+      };
     }
   }
 

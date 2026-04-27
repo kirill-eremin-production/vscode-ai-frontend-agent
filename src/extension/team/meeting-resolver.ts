@@ -36,18 +36,22 @@
  */
 
 import * as crypto from 'node:crypto';
-import { appendChatMessage, createSession, readChat, readMeta } from '../entities/run/storage';
+import {
+  appendChatMessage,
+  createSession,
+  pullIntoRoom,
+  setActiveSession,
+} from '../entities/run/storage';
+import { broadcast } from '../features/run-management/broadcast';
 import {
   getPendingRequests,
   updateMeetingRequestStatus,
   type MeetingRequest,
 } from '../entities/run/meeting-request';
-import {
-  roleStateFor,
-  type RoleStateRunSnapshot,
-  type RoleStateSession,
-} from '../entities/run/role-state';
-import type { Role } from './hierarchy';
+import { roleStateFor, type RoleStateRunSnapshot } from '../entities/run/role-state';
+import { rolesBetween, type Role } from './hierarchy';
+import { buildRoleStateSnapshot } from './run-snapshot';
+import { notifyMeetingWakeup } from './meeting-wakeup';
 
 /**
  * Что произошло с конкретной заявкой за один проход resolver'а.
@@ -129,7 +133,7 @@ export async function resolvePending(runId: string): Promise<ResolveResult[]> {
   const oldestByRequestee = pickOldestPerRequestee(remaining);
   // Снэпшот строим один раз: дальше внутри прохода мы сами знаем, кого
   // только что заняли (`busyAfterResolve`) — повторный read не нужен.
-  const snapshot = await buildRunSnapshot(runId);
+  const snapshot = await buildRoleStateSnapshot(runId);
   const busyAfterResolve = new Set<string>();
 
   for (const [requesteeRole, request] of oldestByRequestee) {
@@ -143,11 +147,45 @@ export async function resolvePending(runId: string): Promise<ResolveResult[]> {
       continue;
     }
     const sessionId = await createMeetingSession(runId, request);
+    // #0051: `createSession` атомарно делает новую комнату активной
+    // (см. `setActiveSession` внутри неё). Для нас это побочка: цикл
+    // инициатора при wake-up будет искать `loop.json` через активную
+    // сессию рана. Восстанавливаем активной ту, в которой инициатор
+    // паузнулся (`contextSessionId`) — так resumer корректно подхватит
+    // его конфиг и продолжит писать события туда же. Сама комната
+    // остаётся в `sessions[]` и доступна UI как отдельный канал.
+    const restored = await setActiveSession(runId, request.contextSessionId);
+    if (restored) {
+      broadcast({ type: 'runs.updated', meta: restored });
+    }
+    // #0051: упрощённая интеграция с `team.escalate`. Если заявка
+    // эскалационная (между requester и requestee есть промежуточные
+    // роли), а они сейчас idle — подтягиваем их в новую комнату через
+    // `pullIntoRoom`, чтобы цепочка коммуникации не рвалась. Если
+    // промежуточная сама занята — оставляем «как есть»: не создаём
+    // ещё одну заявку, чтобы не разводить каскады; будет следующая
+    // итерация триггера. Для не-эскалационных пар (`team.invite`)
+    // `rolesBetween` возвращает пустой массив — no-op.
+    await pullIntermediateIdleRoles(runId, sessionId, request, snapshot);
     await updateMeetingRequestStatus(runId, request.id, 'resolved', {
       resolvedSessionId: sessionId,
     });
     busyAfterResolve.add(requesteeRole);
     results.push({ kind: 'resolved', requestId: request.id, sessionId });
+
+    // #0051: разбудить инициатора. Резолвер не имеет прямого доступа
+    // к ExtensionContext (для секретов) и пакету ролевых resumer'ов;
+    // wake-up идёт через слабую связь — handler регистрируется в
+    // `activate()`. В тестах handler — стаб; в проде дёргает resumer
+    // с `meeting_resolved`-intent'ом. Не await'им — пробуждение
+    // запускает цикл fire-and-forget.
+    void notifyMeetingWakeup({
+      runId,
+      meetingRequestId: request.id,
+      requesterRole: request.requesterRole,
+      requesteeRole: request.requesteeRole as Role,
+      resolvedSessionId: sessionId,
+    });
   }
 
   // Заявки, которые не «самая старая для своего адресата», — ждут за
@@ -237,28 +275,30 @@ async function createMeetingSession(runId: string, request: MeetingRequest): Pro
 }
 
 /**
- * Собрать input для {@link roleStateFor} по реальным данным рана.
+ * #0051: подтянуть в новую сессию-комнату промежуточные роли цепочки
+ * `rolesBetween(requester, requestee)`, если они сейчас `idle`.
  *
- * Для каждой сессии берём последнее сообщение `chat.jsonl` (его автор
- * — единственное, что нужно `roleStateFor` помимо participants/status).
- * `meetingRequests` подкладываем актуальный pending-список (на этом
- * шаге уже без deadlock'нутых — они переведены в `failed` ранее).
+ * Алгоритм упрощённый (по AC #0051): не создаём отдельные meeting-
+ * request'ы для занятых посредников — их подхватит следующая итерация
+ * триггера. На текущем уровне иерархии (#0033) посредник один максимум
+ * (architect между product и programmer), поэтому каскады нам не грозят.
+ *
+ * `pullIntoRoom` идемпотентен: если посредник уже среди participants
+ * новой сессии — no-op; broadcast обновлённой меты не делаем.
  */
-async function buildRunSnapshot(runId: string): Promise<RoleStateRunSnapshot> {
-  const meta = await readMeta(runId);
-  const sessions: RoleStateSession[] = [];
-  if (meta) {
-    for (const summary of meta.sessions) {
-      const chat = await readChat(runId, summary.id);
-      const lastMessageFrom = chat.length > 0 ? chat[chat.length - 1].from : undefined;
-      sessions.push({
-        id: summary.id,
-        status: summary.status,
-        participants: summary.participants,
-        lastMessageFrom,
-      });
+async function pullIntermediateIdleRoles(
+  runId: string,
+  sessionId: string,
+  request: MeetingRequest,
+  snapshot: RoleStateRunSnapshot
+): Promise<void> {
+  const between = rolesBetween(request.requesterRole, request.requesteeRole);
+  for (const role of between) {
+    const state = roleStateFor(role, snapshot);
+    if (state.kind !== 'idle') continue;
+    const updated = await pullIntoRoom(runId, sessionId, role);
+    if (updated) {
+      broadcast({ type: 'runs.updated', meta: updated });
     }
   }
-  const meetingRequests = await getPendingRequests(runId);
-  return { sessions, meetingRequests };
 }

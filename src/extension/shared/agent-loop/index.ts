@@ -13,4 +13,10 @@ export {
   rejectPendingAsk,
   hasPendingAsk,
 } from './pending-asks';
-export { reconstructHistory, loadResumeContext, logResume, type ResumeIntent } from './resume';
+export {
+  reconstructHistory,
+  loadResumeContext,
+  logResume,
+  buildResumeMarker,
+  type ResumeIntent,
+} from './resume';

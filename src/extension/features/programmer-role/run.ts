@@ -4,6 +4,7 @@ import {
   askUserTool,
   reconstructHistory,
   logResume,
+  buildResumeMarker,
   type AgentLoopResult,
   type ToolDefinition,
   type ToolRegistry,
@@ -192,6 +193,12 @@ async function finalizeProgrammerRun(
 ): Promise<void> {
   if (state.finalized) return;
 
+  // kind === 'paused' (#0051) — программист ждёт wake-up от резолвера.
+  // Статус оставляем `running`. `state.finalized` тут заведомо false
+  // (writeSummary не мог пройти — pause выходит после tool_call'ов
+  // одной итерации), поэтому отдельных проверок не нужно.
+  if (outcome.kind === 'paused') return;
+
   if (outcome.kind === 'completed') {
     await appendSystemChatMessage(
       runId,
@@ -282,10 +289,7 @@ export async function runProgrammer(params: { runId: string; apiKey: string }): 
  */
 export function registerProgrammerResumer(): void {
   registerRoleResumer(PROGRAMMER_ROLE, async ({ runId, apiKey, config, events, intent }) => {
-    const marker =
-      intent.kind === 'answer'
-        ? `Resume after VS Code restart, answering tool_call ${intent.pendingToolCallId}`
-        : 'Resume by user follow-up message in chat';
+    const marker = buildResumeMarker(intent);
     await logResume(runId, marker);
 
     const initialHistory = reconstructHistory(config, events, intent);

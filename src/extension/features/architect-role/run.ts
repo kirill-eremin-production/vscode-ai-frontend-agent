@@ -4,6 +4,7 @@ import {
   askUserTool,
   reconstructHistory,
   logResume,
+  buildResumeMarker,
   type AgentLoopResult,
   type ToolDefinition,
   type ToolRegistry,
@@ -154,6 +155,10 @@ async function finalizeArchitectRun(
     return;
   }
 
+  // kind === 'paused' (#0051) — архитектор ждёт wake-up от резолвера.
+  // Статус оставляем `running`, мотивы те же, что у продакта.
+  if (outcome.kind === 'paused') return;
+
   await appendSystemChatMessage(runId, `Архитектор упал: ${outcome.reason}`);
   const failed = await updateRunStatus(runId, 'failed');
   if (failed) broadcast({ type: 'runs.updated', meta: failed });
@@ -241,10 +246,7 @@ export async function runArchitect(params: { runId: string; apiKey: string }): P
  */
 export function registerArchitectResumer(): void {
   registerRoleResumer(ARCHITECT_ROLE, async ({ runId, apiKey, config, events, intent }) => {
-    const marker =
-      intent.kind === 'answer'
-        ? `Resume after VS Code restart, answering tool_call ${intent.pendingToolCallId}`
-        : 'Resume by user follow-up message in chat';
+    const marker = buildResumeMarker(intent);
     await logResume(runId, marker);
 
     const initialHistory = reconstructHistory(config, events, intent);

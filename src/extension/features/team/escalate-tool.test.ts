@@ -1,13 +1,21 @@
 import * as crypto from 'node:crypto';
 import { describe, expect, it } from 'vitest';
-import { buildTeamEscalateTool, ESCALATE_NOT_NEEDED_ERROR } from './escalate-tool';
 import {
+  buildTeamEscalateTool,
+  ESCALATE_NOT_NEEDED_ERROR,
+  type TeamEscalateResult,
+} from './escalate-tool';
+import {
+  appendChatMessage,
+  createSession,
   initRunDir,
   readChat,
   readSessionMeta,
   readToolEvents,
+  setActiveSession,
   type ToolEvent,
 } from '@ext/entities/run/storage';
+import { listMeetingRequests } from '@ext/entities/run/meeting-request';
 import type { Participant, RunMeta } from '@ext/entities/run/types';
 
 /**
@@ -77,7 +85,13 @@ describe('team.escalate — happy path: programmer → product', () => {
     const result = (await tool.handler(
       { targetRole: 'product', message: 'Нужно уточнить ТЗ — пригласил архитектора в свидетели' },
       { ...HANDLER_CONTEXT, runId }
-    )) as { sessionId: string; participants: Participant[]; chain: string[] };
+    )) as TeamEscalateResult;
+
+    // Все промежуточные роли idle (отсутствуют как участники), путь
+    // happy → kind:'invited'. Narrow по дискриминатору фиксирует, что
+    // никто из цепочки не превратился в queued.
+    expect(result.kind).toBe('invited');
+    if (result.kind !== 'invited') return;
 
     // sessionId — та же активная сессия (escalate не создаёт новую).
     expect(result.sessionId).toBe(sessionId);
@@ -134,7 +148,9 @@ describe('team.escalate — happy path: product → programmer (обратное
     const result = (await tool.handler(
       { targetRole: 'programmer', message: 'Хочу уточнить, как ты планируешь это сделать' },
       { ...HANDLER_CONTEXT, runId }
-    )) as { sessionId: string; participants: Participant[]; chain: string[] };
+    )) as TeamEscalateResult;
+    expect(result.kind).toBe('invited');
+    if (result.kind !== 'invited') return;
 
     // То же самое требование к участникам: programmer + architect +
     // product (порядок неважен), как и в обратном направлении.
@@ -193,5 +209,86 @@ describe('team.escalate — отказ при caller === targetRole', () => {
         { ...HANDLER_CONTEXT, runId }
       )
     ).rejects.toThrow(ESCALATE_NOT_NEEDED_ERROR);
+  });
+});
+
+describe('team.escalate — #0051: занятый посредник в цепочке → queued', () => {
+  it('создаёт meeting-request к target и не трогает текущую сессию', async () => {
+    // Сценарий: программист хочет эскалировать к продакту. Архитектор
+    // занят в собственной bridge-сессии (последнее сообщение от продакта
+    // → архитектор busy). По AC #0051 escalate не должен «телепортировать»
+    // занятого архитектора, а обязан поставить ОДИН meeting-request к
+    // продакту и вернуть queued.
+    const runId = `run-${crypto.randomUUID()}`;
+    const meta = await initRunDir(baseMeta(runId), {
+      kind: 'agent-agent',
+      participants: [{ kind: 'user' }, { kind: 'agent', role: 'programmer' }],
+    });
+    const programmerSessionId = meta.activeSessionId;
+
+    // Делаем архитектора busy через отдельную bridge-сессию product↔
+    // architect, последнее сообщение в ней — от продакта (значит
+    // архитектор должен ответить).
+    const bridge = await createSession(runId, {
+      kind: 'agent-agent',
+      participants: [
+        { kind: 'agent', role: 'product' },
+        { kind: 'agent', role: 'architect' },
+      ],
+      prev: [programmerSessionId],
+      status: 'running',
+    });
+    await appendChatMessage(
+      runId,
+      {
+        id: 'm-bridge',
+        from: 'agent:product',
+        at: new Date().toISOString(),
+        text: 'архитектор, проверь',
+      },
+      bridge.session.id
+    );
+
+    // createSession сместил activeSessionId на bridge — но тул вызывается
+    // из программистского loop'а, в его собственной сессии. Возвращаем
+    // активную обратно, чтобы воспроизвести реальный контекст вызова.
+    await setActiveSession(runId, programmerSessionId);
+
+    const tool = buildTeamEscalateTool('programmer');
+    const result = (await tool.handler(
+      { targetRole: 'product', message: 'нужно срочное уточнение' },
+      { ...HANDLER_CONTEXT, runId }
+    )) as TeamEscalateResult;
+
+    expect(result.kind).toBe('queued');
+    if (result.kind !== 'queued') return;
+    expect(result.requesteeRole).toBe('product');
+
+    // Заявка к продакту: ровно одна, со ссылкой на programmerSessionId
+    // как контекст. Промежуточного архитектора отдельной заявкой не
+    // создаём — резолвер сам подтянет его при резолве комнаты.
+    const requests = await listMeetingRequests(runId);
+    expect(requests).toHaveLength(1);
+    expect(requests[0].id).toBe(result.meetingRequestId);
+    expect(requests[0].requesterRole).toBe('programmer');
+    expect(requests[0].requesteeRole).toBe('product');
+    expect(requests[0].contextSessionId).toBe(programmerSessionId);
+    expect(requests[0].message).toBe('нужно срочное уточнение');
+
+    // Активная (программистская) сессия не получила новых participants
+    // и сообщения — escalate не выполнял pullIntoRoom вообще.
+    const session = await readSessionMeta(runId, programmerSessionId);
+    expect(session?.participants).toEqual([
+      { kind: 'user' },
+      { kind: 'agent', role: 'programmer' },
+    ]);
+    const chat = await readChat(runId, programmerSessionId);
+    expect(chat).toHaveLength(0);
+    const events = await readToolEvents(runId, programmerSessionId);
+    const joined = events.filter(
+      (event): event is Extract<ToolEvent, { kind: 'participant_joined' }> =>
+        event.kind === 'participant_joined'
+    );
+    expect(joined).toHaveLength(0);
   });
 });

@@ -11,6 +11,8 @@ import { registerArchitectResumer } from '@ext/features/architect-role';
 import { registerProgrammerResumer } from '@ext/features/programmer-role';
 import { listAllMeta } from '@ext/entities/run/storage';
 import { triggerResolvePending } from '@ext/team/meeting-resolver';
+import { setMeetingWakeupHandler } from '@ext/team/meeting-wakeup';
+import { resumeRun } from '@ext/entities/run/resume-registry';
 
 /**
  * Точка входа extension host.
@@ -89,6 +91,24 @@ export function activate(context: vscode.ExtensionContext) {
   // I/O бюджет ничтожный. Fire-and-forget внутри `triggerResolvePending`:
   // ошибки логируются, активация не падает.
   void resolvePendingForAllRuns();
+
+  // #0051: handler пробуждения инициатора meeting-request'а после
+  // резолва. Регистрируем здесь, потому что только в `activate` есть
+  // доступ к `vscode.ExtensionContext` (нужен для `resumeRun` — тот
+  // достаёт apiKey из SecretStorage). Тестам этот handler не виден
+  // (они работают через свои стабы поверх `setMeetingWakeupHandler`).
+  setMeetingWakeupHandler(async ({ runId, meetingRequestId, requesteeRole, resolvedSessionId }) => {
+    await resumeRun({
+      context,
+      runId,
+      intent: {
+        kind: 'meeting_resolved',
+        meetingRequestId,
+        targetRole: requesteeRole,
+        resolvedSessionId,
+      },
+    });
+  });
 }
 
 /**

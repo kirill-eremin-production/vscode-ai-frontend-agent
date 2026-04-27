@@ -159,6 +159,21 @@ describe('reconstructHistory', () => {
     expect(history[5].role).toBe('tool');
   });
 
+  it('meeting_resolved-intent (#0051) дописывает system-уведомление с ролью и id сессии', () => {
+    const history = reconstructHistory(baseConfig, [], {
+      kind: 'meeting_resolved',
+      meetingRequestId: 'mr-1',
+      targetRole: 'architect',
+      resolvedSessionId: 'sess-room-7',
+    });
+    const last = history[history.length - 1];
+    expect(last.role).toBe('system');
+    const content = (last as { content: string }).content;
+    expect(content).toContain('architect');
+    expect(content).toContain('sess-room-7');
+    expect(content).toContain('mr-1');
+  });
+
   it('continue-intent после длинной истории просто дописывает user в самый конец', () => {
     const events: ToolEvent[] = [
       {

@@ -4,6 +4,7 @@ import {
   askUserTool,
   reconstructHistory,
   logResume,
+  buildResumeMarker,
   type AgentLoopResult,
   type ToolDefinition,
   type ToolRegistry,
@@ -218,6 +219,13 @@ async function finalizeRun(runId: string, apiKey: string, outcome: AgentLoopResu
     return;
   }
 
+  // kind === 'paused' (#0051) — продакт встал на ожидание meeting-request'а.
+  // Статус рана оставляем `running`: формально цикл не завершён, просто
+  // ждёт wake-up от резолвера. Системную пометку в tools.jsonl loop уже
+  // записал — отдельного сообщения в чат не льём, чтобы лента не дублировала
+  // диагностику. На wake-up resumer сам сделает следующий шаг.
+  if (outcome.kind === 'paused') return;
+
   // kind === 'failed' — diagnostics уже лежат в tools.jsonl от loop'а;
   // в чат добавляем человекочитаемое сообщение, чтобы пользователь
   // видел причину, не открывая лог.
@@ -297,10 +305,7 @@ export function registerProductResumer(): void {
   registerRoleResumer(PRODUCT_ROLE, async ({ runId, apiKey, config, events, intent }) => {
     // Маркер в tools.jsonl — для людей, разбирающих лог. Видна точка,
     // в которой произошёл resume и по какой причине.
-    const marker =
-      intent.kind === 'answer'
-        ? `Resume after VS Code restart, answering tool_call ${intent.pendingToolCallId}`
-        : 'Resume by user follow-up message in chat';
+    const marker = buildResumeMarker(intent);
     await logResume(runId, marker);
 
     const initialHistory = reconstructHistory(config, events, intent);

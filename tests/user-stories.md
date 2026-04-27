@@ -1085,3 +1085,73 @@ requestId, reason}`. Никаких других значений.
     meeting-resolver). На каждом сообщении не вызывается осознанно.
   - Ошибки резолвера не валят активацию и не валят запись статуса —
     `triggerResolvePending` глотает исключения и пишет в output.
+
+## US-50. Агент ставит встречу в очередь, когда адресат занят
+
+Задача #0051 связывает то, что было разрозненным: тулы `team.invite` /
+`team.escalate` (#0037, #0038), модель состояния роли (#0048), хранилище
+заявок (#0049) и координатор встреч (#0050). Раньше invite всегда сразу
+«втаскивал» адресата в свою комнату, даже если тот был погружён в чат с
+кем-то другим — это ломает метафору команды людей и приводит к тому,
+что архитектор бросает разговор с продактом, потому что программист
+позвал. После #0051 invite/escalate сначала проверяет `roleStateFor`:
+если адресат занят — записывает meeting-request, инициатор
+останавливается до резолва, и резолвер (#0050) пробуждает его, как только
+адресат освободился.
+
+С точки зрения пользователя на этой итерации UI всё ещё минимальный
+(полноценный inbox — #0052), но история journal-а на диске уже
+показывает «правильную» хронологию: занятые роли не дёргаются, заявки
+живут в `meeting-requests.jsonl` и резолвятся, как только освободились
+исполнители.
+
+Acceptance:
+
+- `team.invite(targetRole, message)`, когда `roleStateFor(targetRole)`
+  не `idle`: тул не вызывает `pullIntoRoom`, не пишет сообщение в
+  активную сессию, а создаёт `MeetingRequest {requesterRole: caller,
+requesteeRole: targetRole, contextSessionId, message}` и возвращает
+  `{kind: 'queued', meetingRequestId, requesteeRole}`. Состав активной
+  сессии и её `chat.jsonl` не меняются.
+- `team.invite(targetRole, message)`, когда адресат `idle`: поведение
+  как было (#0037) — `pullIntoRoom` + `appendChatMessage` + результат
+  `{kind: 'invited', sessionId, participants}`.
+- `team.escalate(targetRole, message)`: цепочка считается одним проходом
+  `[caller, ...rolesBetween(caller, target), target]`. Если хотя бы
+  одна роль в цепочке (кроме caller'а) не `idle` — тул создаёт
+  единственный meeting-request к `targetRole` с тем же `message` и
+  возвращает `{kind: 'queued'}`. Промежуточных при резолве подтянет
+  координатор. Если все idle — поведение как было (#0038): по очереди
+  pullIntoRoom + одно сообщение от caller'а в комнату.
+- Discriminator результата (`kind: 'invited' | 'queued'`) — единственный
+  способ модели понять, что произошло: `tool_result` сериализуется как
+  есть, agent-loop ловит `queued` и завершает текущий цикл.
+- Когда tool вернул `queued`: agent-loop вместо очередного шага
+  возвращает `{kind: 'paused', meetingRequestId, reason}`. Дополнительный
+  системный tool-event пишется в `tools.jsonl` для диагностики; статус
+  рана остаётся `running` (не вводим новый статус — pause описывается
+  через `roleStateFor` поверх meeting-requests). Финализатор роли
+  (продакт/архитектор/программист) для `paused` ничего не пишет в чат
+  и не меняет статус — ждёт пробуждения.
+- Когда координатор (#0050) резолвит meeting-request: создаёт новую
+  сессию-комнату, восстанавливает `activeSessionId` инициатора (чтобы
+  его loop'у было куда писать) и через `setMeetingWakeupHandler` зовёт
+  `resumeRun` инициатора с интентом `meeting_resolved`. Loop инициатора
+  поднимается с системным маркером «Получен ответ от <targetRole>, см.
+  сессию <resolvedSessionId>».
+- Resume-marker для `meeting_resolved` — буквально: `Resume after
+meeting-request <id> resolved (reply from <role>, session <sid>)` (см.
+  `buildResumeMarker`). Используется и в продакте, и в архитекторе, и в
+  программисте — DRY-контракт, чтобы не разъезжалось по ролям.
+- Повторный invite на занятого: первый invite (адресат был idle) ушёл
+  как раньше; второй (после первого сообщения caller'а — адресат
+  стал busy) возвращает `queued`, не дублирует pullIntoRoom, не
+  добавляет второе сообщение в чат и регистрирует одну заявку.
+- Тесты юнит-уровня (см. `team/invite-tool.test.ts`,
+  `team/escalate-tool.test.ts`, `agent-loop/loop.test.ts`,
+  `agent-loop/resume.test.ts`) фиксируют все ветки: idle/busy для
+  invite, idle/busy-в-цепочке для escalate, paused в loop'е, marker
+  для `meeting_resolved` в resume.
+- E2E проверка ручная (TC-58): прогон lint+build+test:unit, ручная
+  симуляция через DevTools-консоль (создание заявки → проверка `queued`
+  → резолв через `triggerResolvePending` → пробуждение инициатора).
