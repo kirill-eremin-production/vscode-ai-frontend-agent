@@ -1,9 +1,14 @@
 ---
 id: 0030
 title: Многоучастниковые сессии-комнаты (>2 агентов в одном чате)
-status: open
+status: done
 created: 2026-04-26
+completed: 2026-04-27
 ---
+
+## Outcome
+
+Закрыта через подзадачи: #0034 (`Session.participants` как массив + read-time normalization старых сессий), #0036 (action `pullIntoRoom` + системное событие `participant_joined`, идемпотентность), #0040 (резумер срезает историю участника с момента `participant_joined`), #0041 (chat UI на N участников — список аватаров, цвета по `authorRole`). Парное предположение `[a, b]` снято.
 
 > **Декомпозиция:** #0034 (Session.participants как массив), #0036 (pullIntoRoom + participant_joined), #0040 (resumer history slicing), #0041 (chat UI на N участников).
 

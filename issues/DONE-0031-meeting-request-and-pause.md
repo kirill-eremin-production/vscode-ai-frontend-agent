@@ -1,9 +1,14 @@
 ---
 id: 0031
 title: Запрос на встречу и pause-состояние, когда участник занят
-status: open
+status: done
 created: 2026-04-26
+completed: 2026-04-27
 ---
+
+## Outcome
+
+Закрыта через подзадачи: #0048 (модель состояния роли idle/busy/awaiting_input), #0049 (storage `MeetingRequest` в run-каталоге, переживает рестарт), #0050 (meeting-resolver на завершении сессии и активации, простой 2-cycle deadlock detect), #0051 (invite/escalate ставят встречу в очередь когда адресат занят, agent-loop ставится на паузу), #0052 (paused-визуал на кубике канваса, в карточке встречи и inbox заявок). Cancel/timeout и n-cycle detection остались на будущее как планировалось.
 
 > **Декомпозиция:** #0048 (модель состояния роли), #0049 (storage MeetingRequest), #0050 (meeting-resolver + deadlock), #0051 (интеграция invite/escalate с busy + пауза agent-loop), #0052 (UI для paused и inbox).
 
