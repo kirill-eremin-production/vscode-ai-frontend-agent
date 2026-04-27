@@ -1,5 +1,5 @@
 import * as crypto from 'node:crypto';
-import { describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import { resolvePending } from './meeting-resolver';
 import {
   createSession,
@@ -9,6 +9,7 @@ import {
   readChat,
 } from '../entities/run/storage';
 import { createMeetingRequest, listMeetingRequests } from '../entities/run/meeting-request';
+import { setMeetingWakeupHandler } from './meeting-wakeup';
 import type { Participant, RunMeta } from '../entities/run/types';
 
 /**
@@ -255,6 +256,169 @@ describe('resolvePending — несколько pending к одной роли',
     const byId = new Map(requests.map((request) => [request.id, request] as const));
     expect(byId.get(oldRequest.id)?.status).toBe('resolved');
     expect(byId.get(newRequest.id)?.status).toBe('pending');
+  });
+});
+
+describe('resolvePending — #0051: подтянуть idle-промежуточные роли цепочки escalate', () => {
+  it('программист эскалирует к продакту, архитектор idle → после резолва он в комнате', async () => {
+    // Сценарий из AC #0051: «escalate с busy product, idle architect →
+    // request создан, после резолва в комнате есть architect (как
+    // промежуточный)». Здесь target — продакт, busy была не цепочка
+    // целиком, а только адресат (продакт). Архитектор в это время idle —
+    // значит при резолве комнаты резолвер ОБЯЗАН подтянуть его как
+    // промежуточный через `pullIntermediateIdleRoles`, иначе цепочка
+    // коммуникации программист↔продакт окажется разорвана.
+    const runId = freshRunId();
+    const initial = await initProductRun(runId);
+    // Делаем продакта idle (последнее сообщение — от него самого).
+    await appendChatMessage(runId, {
+      id: 'm-product',
+      from: 'agent:product',
+      at: new Date().toISOString(),
+      text: 'я свободен',
+    });
+
+    // Заявка от программиста к продакту: rolesBetween(programmer, product)
+    // → ['architect']. Программист и архитектор — оба idle (нет ни своих
+    // сессий, ни pending-заявок), поэтому архитектор должен попасть в
+    // новую комнату.
+    await createMeetingRequest(runId, {
+      requesterRole: 'programmer',
+      requesteeRole: 'product',
+      contextSessionId: initial.activeSessionId,
+      message: 'нужно срочное уточнение',
+    });
+
+    const results = await resolvePending(runId);
+
+    expect(results).toHaveLength(1);
+    const resolved = results[0];
+    expect(resolved.kind).toBe('resolved');
+    if (resolved.kind !== 'resolved') return;
+
+    // Состав комнаты: requester + requestee + intermediate (architect).
+    // Порядок не фиксируем — pullIntermediateIdleRoles добавляет
+    // architect-а ПОСЛЕ создания сессии с парой [programmer, product].
+    const meta = await readMeta(runId);
+    const room = meta?.sessions.find((session) => session.id === resolved.sessionId);
+    expect(room).toBeDefined();
+    const roomRoles = room!.participants
+      .filter(
+        (participant): participant is Extract<Participant, { kind: 'agent' }> =>
+          participant.kind === 'agent'
+      )
+      .map((participant) => participant.role)
+      .sort();
+    expect(roomRoles).toEqual(['architect', 'product', 'programmer']);
+  });
+
+  it('busy-промежуточный пропускается, заявка всё равно резолвится только requester+requestee', async () => {
+    // Контр-сценарий: архитектор busy (висит bridge-сессия с продактом
+    // → последнее сообщение от продакта). Программист эскалирует к
+    // продакту. Решение #0051 (упрощённое): занятого посредника НЕ
+    // дёргаем — он будет подтянут позже на следующем триггере, когда
+    // освободится. Заявка резолвится без архитектора.
+    const runId = freshRunId();
+    const initial = await initProductRun(runId);
+    // Делаем архитектора busy через bridge-сессию (последнее сообщение
+    // от продакта — архитектор должен ответить).
+    const bridge = await createSession(runId, {
+      kind: 'agent-agent',
+      participants: [
+        { kind: 'agent', role: 'product' },
+        { kind: 'agent', role: 'architect' },
+      ],
+      prev: [initial.activeSessionId],
+      status: 'running',
+    });
+    await appendChatMessage(
+      runId,
+      {
+        id: 'm-bridge',
+        from: 'agent:product',
+        at: new Date().toISOString(),
+        text: 'архитектор, проверь',
+      },
+      bridge.session.id
+    );
+
+    await createMeetingRequest(runId, {
+      requesterRole: 'programmer',
+      requesteeRole: 'product',
+      contextSessionId: initial.activeSessionId,
+      message: 'нужно срочно',
+    });
+
+    const results = await resolvePending(runId);
+
+    expect(results.some((result) => result.kind === 'resolved')).toBe(true);
+    const resolved = results.find((result) => result.kind === 'resolved');
+    if (resolved?.kind !== 'resolved') return;
+
+    const meta = await readMeta(runId);
+    const room = meta?.sessions.find((session) => session.id === resolved.sessionId);
+    const roomRoles = room!.participants
+      .filter(
+        (participant): participant is Extract<Participant, { kind: 'agent' }> =>
+          participant.kind === 'agent'
+      )
+      .map((participant) => participant.role)
+      .sort();
+    // Архитектор НЕ подтянут — он остался занят в bridge-сессии.
+    expect(roomRoles).toEqual(['product', 'programmer']);
+  });
+});
+
+describe('resolvePending — #0051: notifyMeetingWakeup вызывается с реальными параметрами', () => {
+  afterEach(() => {
+    // Снимаем стаб handler-а: иначе следующие тесты в файле/сюте
+    // увидят его побочки. setMeetingWakeupHandler(undefined) штатный
+    // путь снятия (см. реализацию в meeting-wakeup.ts).
+    setMeetingWakeupHandler(undefined);
+  });
+
+  it('после резолва handler получает runId, meetingRequestId, requester/requestee и resolvedSessionId', async () => {
+    // AC #0051: «при резолве agent-loop инициатора пробуждается с
+    // системным сообщением». Прямой проверки resume здесь не нужно
+    // (это покрывает loop.test.ts > paused и resume.test.ts > meeting_resolved);
+    // здесь убеждаемся, что резолвер РЕАЛЬНО зовёт wake-up handler с
+    // полным набором параметров — без них resumer не сможет восстановить
+    // контекст инициатора.
+    const wakeupHandler = vi.fn(async () => {});
+    setMeetingWakeupHandler(wakeupHandler);
+
+    const runId = freshRunId();
+    const initial = await initProductRun(runId);
+    await appendChatMessage(runId, {
+      id: 'm-product',
+      from: 'agent:product',
+      at: new Date().toISOString(),
+      text: 'свободен',
+    });
+    const request = await createMeetingRequest(runId, {
+      requesterRole: 'product',
+      requesteeRole: 'architect',
+      contextSessionId: initial.activeSessionId,
+      message: 'нужен план',
+    });
+
+    const results = await resolvePending(runId);
+    const resolved = results.find((result) => result.kind === 'resolved');
+    expect(resolved).toBeDefined();
+    if (resolved?.kind !== 'resolved') return;
+
+    // Резолвер не await'ит handler (fire-and-forget), но делает это в
+    // том же микротик-кадре через `void notifyMeetingWakeup(...)`. К
+    // моменту, когда resolvePending вернул, handler уже синхронно
+    // зарегистрировал вызов — vi.fn это видит.
+    expect(wakeupHandler).toHaveBeenCalledTimes(1);
+    expect(wakeupHandler).toHaveBeenCalledWith({
+      runId,
+      meetingRequestId: request.id,
+      requesterRole: 'product',
+      requesteeRole: 'architect',
+      resolvedSessionId: resolved.sessionId,
+    });
   });
 });
 

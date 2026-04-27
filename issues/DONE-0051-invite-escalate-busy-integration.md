@@ -1,7 +1,7 @@
 ---
 id: 0051
 title: invite/escalate — интеграция с meeting-request при busy + пауза agent-loop
-status: open
+status: done
 created: 2026-04-26
 ---
 
@@ -36,3 +36,10 @@ created: 2026-04-26
 
 - Подзадача #0031.
 - Зависит от: #0037, #0038, #0048, #0049, #0050.
+
+## Outcome
+
+- `team.invite`/`team.escalate` (`src/extension/features/team/{invite,escalate}-tool.ts`) проверяют `roleStateFor` адресата (и промежуточных у escalate). Если хотя бы одна роль не `idle` — создают `MeetingRequest` через `appendMeetingRequest` (#0049) и возвращают `{kind: 'queued', meetingRequestId}` без `pullIntoRoom`.
+- `agent-loop` (`src/extension/shared/agent-loop/loop.ts`) ловит queued-результат через `extractQueuedMeetingRequestId`, доводит до конца все tool_call-ы шага и выходит с `kind: 'paused'`. Ролевые `finalize*Run` (`product/architect/programmer-role/run.ts`) на `paused` оставляют статус `running` и ждут wake-up.
+- `meeting-resolver` (`src/extension/team/meeting-resolver.ts`) при резолве дополнительно подтягивает idle-промежуточные роли цепочки escalate (`pullIntermediateIdleRoles`) и через `notifyMeetingWakeup` (`src/extension/team/meeting-wakeup.ts` + `agent-loop/resume.ts` `meeting_resolved` intent) будит инициатора с системным сообщением о новой комнате.
+- Тесты: `src/extension/shared/agent-loop/loop.test.ts` (paused-ветка), новые describe-блоки в `src/extension/team/meeting-resolver.test.ts` (intermediate pull + wakeup-параметры), `invite-tool.test.ts`/`escalate-tool.test.ts` на queued. Коммит реализации b78d028 + done-коммит.
