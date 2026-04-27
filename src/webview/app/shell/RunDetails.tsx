@@ -2,6 +2,7 @@ import { useMemo, useState } from 'react';
 import {
   composerSendKey,
   drillIntoSession,
+  selectPendingRequests,
   selectRunDetailsTab,
   sendFinalizeSignal,
   sendUserMessage,
@@ -119,6 +120,7 @@ export function RunDetails() {
             meta={meta}
             tools={tools}
             chat={chat}
+            pendingRequests={selectPendingRequests(stateSnapshot, meta.id)}
             onSwitchToChat={() => setRunDetailsTab(meta.id, 'chat')}
             onDrillIn={(sessionId) => drillIntoSession(meta.id, sessionId)}
           />

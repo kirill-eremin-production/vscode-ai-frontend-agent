@@ -1,6 +1,6 @@
 import { useEffect, useSyncExternalStore } from 'react';
 import { vscode } from '@shared/api/vscode';
-import type { ChatMessage, PendingAsk, RunMeta, ToolEvent } from './types';
+import type { ChatMessage, MeetingRequestSummary, PendingAsk, RunMeta, ToolEvent } from './types';
 
 /**
  * Простой in-memory store ранов для webview.
@@ -143,6 +143,21 @@ interface RunsState {
    * пользователей. Persist'ится под ключом `sidePanel.tab.<runId>`.
    */
   sidePanelTabByRun: Record<string, SidePanelTab>;
+  /**
+   * Pending meeting-requests по ранам (#0052). Заполняется из
+   * `runs.get.result.pendingRequests` при выборе рана и обновляется
+   * broadcast'ом `runs.pendingRequests.updated` при создании/резолве/
+   * deadlock-fail заявок. Используется тремя UI-местами:
+   *  - canvas рисует кубик роли в состоянии `paused`, если у роли
+   *    есть pending заявка как у requester (она ждёт ответа);
+   *  - meeting-card показывает «paused» статус, если её
+   *    `contextSessionId` совпал с pending-заявкой;
+   *  - inbox в MeetingsPanel перечисляет все pending как drill-in.
+   *
+   * Накопительная мапа per-run, не сбрасывается при `selectRun` —
+   * следующий broadcast (или повторный `runs.get`) её актуализирует.
+   */
+  pendingRequestsByRun: Record<string, MeetingRequestSummary[]>;
 }
 
 export type RunDetailsTab = 'canvas' | 'chat';
@@ -177,6 +192,7 @@ const initialState: RunsState = {
   runDetailsTabByRun: {},
   lastViewedSessionByRun: {},
   sidePanelTabByRun: {},
+  pendingRequestsByRun: {},
 };
 
 /** Пометить локальный pending-флаг для произвольной операции (#0022). */
@@ -655,6 +671,7 @@ type ExtensionToWebviewMessage =
       brief?: string;
       plan?: string;
       summary?: string;
+      pendingRequests?: MeetingRequestSummary[];
     }
   | { type: 'runs.created'; meta: RunMeta }
   | { type: 'runs.error'; message: string }
@@ -663,6 +680,11 @@ type ExtensionToWebviewMessage =
   | { type: 'runs.askUser'; runId: string; ask: PendingAsk }
   | { type: 'runs.message.appended'; runId: string; sessionId: string; message: ChatMessage }
   | { type: 'runs.tool.appended'; runId: string; sessionId: string; event: ToolEvent }
+  | {
+      type: 'runs.pendingRequests.updated';
+      runId: string;
+      pendingRequests: MeetingRequestSummary[];
+    }
   | { type: 'state.uiPrefs.result'; prefs: Record<string, unknown> }
   | { type: 'state.workspace.result'; hasWorkspace: boolean };
 
@@ -800,6 +822,15 @@ export function useRunsWiring(): void {
                 selectedSummary: undefined,
               };
             }
+            // #0052: pendingRequests приезжают только в ответе на runs.get
+            // (а не в live-updates) — но писать их в общую мапу всё равно
+            // безопасно: остальные ранцы там лежат как лежат, а активный
+            // обновится. Если поле undefined — оставляем прежнее значение
+            // (старые контракты без pendingRequests, например, в e2e-стабах).
+            const pendingRequestsByRun =
+              data.pendingRequests !== undefined
+                ? { ...prev.pendingRequestsByRun, [data.id]: data.pendingRequests }
+                : prev.pendingRequestsByRun;
             return {
               ...prev,
               // selectedSessionId не перезаписываем из ответа: undefined =
@@ -816,6 +847,7 @@ export function useRunsWiring(): void {
               selectedBrief: data.brief,
               selectedPlan: data.plan,
               selectedSummary: data.summary,
+              pendingRequestsByRun,
             };
           });
           return;
@@ -929,6 +961,21 @@ export function useRunsWiring(): void {
           });
           return;
         }
+        case 'runs.pendingRequests.updated': {
+          // #0052: extension рассылает этот broadcast при создании заявки
+          // (team.invite/team.escalate в queued-ветке) и при резолве/
+          // deadlock-fail в meeting-resolver. Перезаписываем список
+          // целиком — extension присылает актуальный snapshot pending'ов
+          // для рана, мерджить нечего.
+          setState((prev) => ({
+            ...prev,
+            pendingRequestsByRun: {
+              ...prev.pendingRequestsByRun,
+              [data.runId]: data.pendingRequests,
+            },
+          }));
+          return;
+        }
         case 'runs.error': {
           // Ошибки уже показывает extension через showErrorMessage.
           // Здесь дополнительно ловим её в форму создания, если она
@@ -977,3 +1024,20 @@ export function useRunsWiring(): void {
 export function useRunsState(): RunsState {
   return useSyncExternalStore(subscribe, getSnapshot, getSnapshot);
 }
+
+/**
+ * Pending meeting-requests конкретного рана (#0052). Возвращает пустой
+ * массив, если для рана данных ещё нет (UI рендерит «нет заявок»).
+ * Стабильная ссылка не гарантируется — вызывающий код должен
+ * переразмещать выводимые из неё структуры через useMemo, если это
+ * критично для дочерних рендеров.
+ */
+export function selectPendingRequests(
+  state: RunsState,
+  runId: string | undefined
+): readonly MeetingRequestSummary[] {
+  if (!runId) return EMPTY_PENDING_REQUESTS;
+  return state.pendingRequestsByRun[runId] ?? EMPTY_PENDING_REQUESTS;
+}
+
+const EMPTY_PENDING_REQUESTS: readonly MeetingRequestSummary[] = [];

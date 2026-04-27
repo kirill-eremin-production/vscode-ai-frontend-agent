@@ -12,6 +12,8 @@ import {
   readSummary,
 } from '@ext/entities/run/storage';
 import { resumeRun } from '@ext/entities/run/resume-registry';
+import { getPendingRequests } from '@ext/entities/run/meeting-request';
+import { toMeetingRequestSummaries } from './pending-requests';
 import { resolvePendingAsk } from '@ext/shared/agent-loop';
 import {
   PRODUCT_FINALIZE_MARKER,
@@ -129,6 +131,14 @@ export function wireRunMessages(
           // summary.md появляется после финализации программиста (#0027).
           // Читаем безусловно, по тем же мотивам, что brief/plan.
           const summary = details ? await readSummary(msg.id) : undefined;
+          // pending meeting-requests (#0052) — шлём вместе с деталями,
+          // чтобы webview сразу нарисовал inbox/paused-state без второго
+          // round-trip'а. Если рана нет (details === undefined) — не
+          // читаем: getPendingRequests на отсутствующем runId вернул бы
+          // пустой массив, но лишний disk-read дешевле пропустить.
+          const pendingRequests = details
+            ? toMeetingRequestSummaries(await getPendingRequests(msg.id))
+            : undefined;
           send({
             type: 'runs.get.result',
             id: msg.id,
@@ -140,6 +150,7 @@ export function wireRunMessages(
             brief,
             plan,
             summary,
+            pendingRequests,
           });
           return;
         }

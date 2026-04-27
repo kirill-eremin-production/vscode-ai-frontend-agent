@@ -141,6 +141,23 @@ export interface RunMeta {
 }
 
 /**
+ * Облегчённый снимок meeting-request для webview (#0052). Зеркало
+ * `MeetingRequestSummary` из IPC-контракта extension'а. Заявки в
+ * статусах `resolved`/`failed` сюда не попадают — UI работает только
+ * с pending. Поля `requesterRole`/`requesteeRole` хранятся строкой:
+ * на стороне webview всегда одна из ролей иерархии (`product`,
+ * `architect`, `programmer`); валидация — на стороне extension'а.
+ */
+export interface MeetingRequestSummary {
+  id: string;
+  requesterRole: string;
+  requesteeRole: string;
+  contextSessionId: string;
+  message: string;
+  createdAt: string;
+}
+
+/**
  * Зеркало `ToolEvent` из storage.ts. Это лента tool_calls/tool_results/
  * системных диагностик, которую webview мерджит с `chat` по timestamp
  * и рендерит в единой ленте рана (US-11).

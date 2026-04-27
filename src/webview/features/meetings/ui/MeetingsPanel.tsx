@@ -1,9 +1,16 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { CalendarDays, ChevronLeft, ChevronRight } from 'lucide-react';
-import type { ChatMessage, RunMeta, RunStatus, SessionSummary } from '@shared/runs/types';
+import type {
+  ChatMessage,
+  MeetingRequestSummary,
+  RunMeta,
+  RunStatus,
+  SessionSummary,
+} from '@shared/runs/types';
 import { Badge, IconButton } from '@shared/ui';
 import {
   drillIntoSession,
+  selectPendingRequests,
   selectSessionsPanelCollapsed,
   selectSidePanelTab,
   setSessionsPanelCollapsed,
@@ -85,8 +92,14 @@ export function MeetingsPanel() {
           disabled={!runId}
         />
       </header>
-      <div className="flex-1 overflow-auto p-2">
-        <MeetingsPanelBody meta={meta} runId={runId} chat={state.selectedDetails?.chat ?? []} />
+      <div className="flex-1 overflow-auto p-2 flex flex-col gap-2">
+        <PendingRequestsInbox runId={runId} pendingRequests={selectPendingRequests(state, runId)} />
+        <MeetingsPanelBody
+          meta={meta}
+          runId={runId}
+          chat={state.selectedDetails?.chat ?? []}
+          pendingRequests={selectPendingRequests(state, runId)}
+        />
       </div>
     </aside>
   );
@@ -96,6 +109,12 @@ interface MeetingsPanelBodyProps {
   meta: RunMeta | undefined;
   runId: string | undefined;
   chat: ReadonlyArray<ChatMessage>;
+  /**
+   * Pending meeting-requests рана (#0052). Используется для подсветки
+   * карточек, чьи `id` совпадает с `contextSessionId` заявки —
+   * визуально это «сессия на паузе, инициатор ждёт ответа».
+   */
+  pendingRequests: ReadonlyArray<MeetingRequestSummary>;
 }
 
 /**
@@ -111,6 +130,19 @@ function MeetingsPanelBody(props: MeetingsPanelBodyProps) {
   const meta = props.meta;
   const runId = props.runId;
   const sessions = useMemo(() => sortMeetingsByCreatedDesc(meta?.sessions ?? []), [meta?.sessions]);
+
+  // Map<contextSessionId, requesteeRole> — для O(1) поиска при рендере
+  // карточек. Строится из pending-заявок: каждая заявка «приклеивает»
+  // сессию-инициатор к роли-адресату. На один контекст-сессию может
+  // быть только одна pending-заявка (тул `team.invite` отбраковывает
+  // дубликаты по тому же requestee), поэтому конфликтов не ожидаем.
+  const pausedRequesteeBySession = useMemo(() => {
+    const map = new Map<string, string>();
+    for (const request of props.pendingRequests) {
+      map.set(request.contextSessionId, request.requesteeRole);
+    }
+    return map;
+  }, [props.pendingRequests]);
 
   // Индекс «sessionId → сессия» прокидывается в каждую карточку, чтобы
   // SessionLinkRow без обхода массива нашёл соседа по prev/next-id.
@@ -211,6 +243,7 @@ function MeetingsPanelBody(props: MeetingsPanelBodyProps) {
             viewedSessionId={viewedSessionId}
             viewedSessionFirstMessage={firstMessageByViewed}
             isFlashing={flashSessionId === session.id}
+            pausedRequesteeRole={pausedRequesteeBySession.get(session.id)}
             onCardElement={setCardElement(session.id)}
             onSelect={(sessionId) => drillIntoSession(runId, sessionId)}
             onNavigateLink={handleNavigateLink}
@@ -218,6 +251,88 @@ function MeetingsPanelBody(props: MeetingsPanelBodyProps) {
         </li>
       ))}
     </ul>
+  );
+}
+
+/**
+ * Inbox «Заявки на встречи» (#0052). Список pending meeting-request'ов
+ * рана: формат «<requesterRole> → <requesteeRole>: <preview>». Клик по
+ * элементу делает drill-in в `contextSessionId` — пользователь оказывается
+ * в той сессии, где инициатор поставил встречу.
+ *
+ * Заявок мало (на иерархии #0033 максимум 2-3 в флайт), поэтому скролл
+ * не нужен — встраиваем как фиксированную секцию над списком встреч.
+ * Полное скрытие на пустом списке (а не «нет заявок» текстом) — иначе
+ * inbox занимает вертикаль на всех ранах, где встреч нет вообще.
+ */
+function PendingRequestsInbox(props: {
+  runId: string | undefined;
+  pendingRequests: ReadonlyArray<MeetingRequestSummary>;
+}) {
+  if (!props.runId || props.pendingRequests.length === 0) return null;
+  // Сортируем по createdAt asc: «самая старая первой» — ровно та, что
+  // первой попадёт в резолв при освобождении адресата (см. meeting-resolver).
+  const sorted = [...props.pendingRequests].sort((left, right) =>
+    left.createdAt.localeCompare(right.createdAt)
+  );
+  return (
+    <section
+      className="flex flex-col gap-1 border border-border-subtle rounded-sm p-2 bg-[var(--vscode-input-background)]"
+      data-pending-requests-inbox
+      aria-label="Заявки на встречи"
+    >
+      <header className="text-[11px] text-muted font-semibold">
+        Заявки на встречи ({sorted.length})
+      </header>
+      <ul className="list-none m-0 p-0 flex flex-col gap-1" data-testid="pending-requests-list">
+        {sorted.map((request) => (
+          <li key={request.id}>
+            <PendingRequestRow
+              request={request}
+              onSelect={() =>
+                props.runId && drillIntoSession(props.runId, request.contextSessionId)
+              }
+            />
+          </li>
+        ))}
+      </ul>
+    </section>
+  );
+}
+
+/**
+ * Превью текста заявки. Сообщение инициатора — тот самый параметр
+ * `message` тула `team.invite`/`team.escalate`. Длинное превью обрезаем
+ * по 80 символам, чтобы инбокс не «прыгал» по высоте.
+ */
+const REQUEST_PREVIEW_LIMIT = 80;
+
+function PendingRequestRow(props: { request: MeetingRequestSummary; onSelect: () => void }) {
+  const { request } = props;
+  const preview =
+    request.message.length > REQUEST_PREVIEW_LIMIT
+      ? request.message.slice(0, REQUEST_PREVIEW_LIMIT - 1) + '…'
+      : request.message;
+  return (
+    <button
+      type="button"
+      data-pending-request
+      data-pending-request-id={request.id}
+      data-pending-request-context={request.contextSessionId}
+      onClick={props.onSelect}
+      title={request.message}
+      className={
+        'w-full text-left px-2 py-1 text-[11px] rounded-sm border border-transparent ' +
+        'hover:bg-[var(--vscode-list-hoverBackground)] focus-visible:outline-none ' +
+        'focus-visible:ring-2 focus-visible:ring-[var(--vscode-focusBorder)]'
+      }
+    >
+      <span className="text-muted">{request.requesterRole}</span>
+      <span aria-hidden> → </span>
+      <span className="text-muted">{request.requesteeRole}</span>
+      <span aria-hidden>: </span>
+      <span className="text-foreground">{preview}</span>
+    </button>
   );
 }
 

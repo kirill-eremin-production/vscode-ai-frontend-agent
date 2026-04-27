@@ -1,5 +1,11 @@
 import type { Meta, StoryObj } from '@storybook/react-vite';
-import type { ChatMessage, RunMeta, SessionSummary, UsageAggregate } from '@shared/runs/types';
+import type {
+  ChatMessage,
+  MeetingRequestSummary,
+  RunMeta,
+  SessionSummary,
+  UsageAggregate,
+} from '@shared/runs/types';
 import { RunCanvas } from './RunCanvas';
 
 /**
@@ -143,6 +149,42 @@ const awaitingChat: ChatMessage[] = [
   chatMessage('m2', 'agent:product', 'Уточни: где сохранять выбор — localStorage или профиль?'),
 ];
 
+// #0052: paused-кубик. Архитектор поставил meeting-request к
+// программисту (например, через team.escalate) и ждёт его ответа.
+// Активная сессия не важна — paused имеет приоритет и рисуется
+// независимо от участия роли.
+const pausedMeta = buildRunMeta({
+  sessions: [
+    session({
+      id: 's1',
+      status: 'done',
+      participants: [{ kind: 'user' }, { kind: 'agent', role: 'product' }],
+    }),
+    session({
+      id: 's2',
+      kind: 'agent-agent',
+      status: 'running',
+      participants: [
+        { kind: 'agent', role: 'product' },
+        { kind: 'agent', role: 'architect' },
+      ],
+    }),
+  ],
+  activeSessionId: 's2',
+  status: 'running',
+});
+
+const pausedRequests: MeetingRequestSummary[] = [
+  {
+    id: 'req1',
+    requesterRole: 'architect',
+    requesteeRole: 'programmer',
+    contextSessionId: 's2',
+    message: 'Уточни оценку, запоздает ли поставка фичи на 2 спринта?',
+    createdAt: '2026-04-26T10:05:00Z',
+  },
+];
+
 /**
  * Галерея трёх состояний рядом — основная сторис под AC #0044
  * («канвас с тремя кубиками в разных состояниях»). Размещаем три
@@ -154,9 +196,9 @@ export const ThreeCubeStates: Story = {
     <div
       style={{
         display: 'grid',
-        gridTemplateColumns: 'repeat(3, minmax(280px, 1fr))',
+        gridTemplateColumns: 'repeat(2, minmax(280px, 1fr))',
         gap: 16,
-        height: 640,
+        height: 960,
       }}
     >
       <Frame title="idle">
@@ -167,6 +209,14 @@ export const ThreeCubeStates: Story = {
       </Frame>
       <Frame title="awaiting_user (product ждёт ответа)">
         <RunCanvas meta={awaitingMeta} tools={[]} chat={awaitingChat} />
+      </Frame>
+      <Frame title="paused (#0052: architect ждёт ответа от programmer)">
+        <RunCanvas
+          meta={pausedMeta}
+          tools={[]}
+          chat={workingChat}
+          pendingRequests={pausedRequests}
+        />
       </Frame>
     </div>
   ),

@@ -1,5 +1,30 @@
 import type { ChatMessage, RunMeta } from '@ext/entities/run/types';
 import type { PendingAsk, ToolEvent } from '@ext/entities/run/storage';
+import type { MeetingRequest } from '@ext/entities/run/meeting-request';
+
+/**
+ * Облегчённое представление meeting-request для UI (#0052).
+ *
+ * IPC-зеркало {@link MeetingRequest} с теми полями, которые нужны
+ * webview'у для inbox/paused-state: id заявки + кто кого зовёт + куда
+ * её привязать (`contextSessionId` совпадает с id сессии «откуда» —
+ * по нему карточка встречи рисует paused-статус), + сам preview-текст
+ * и время создания. Поля `resolvedAt`/`resolvedSessionId`/
+ * `failureReason` НЕ передаём — UI работает только с `pending`-заявками,
+ * для них эти поля всегда undefined.
+ *
+ * Вынесено в IPC-слой, чтобы webview не импортировал из `entities/`
+ * напрямую (boundary ESLint) и чтобы случайное расширение `MeetingRequest`
+ * на стороне extension'а не утекло в браузерный бандл.
+ */
+export interface MeetingRequestSummary {
+  id: string;
+  requesterRole: MeetingRequest['requesterRole'];
+  requesteeRole: MeetingRequest['requesteeRole'];
+  contextSessionId: string;
+  message: string;
+  createdAt: string;
+}
 
 /**
  * Контракт сообщений между webview и extension host для работы с ранами.
@@ -210,6 +235,17 @@ export interface RunsGetResult {
    * `writeSummary`. До этого момента undefined.
    */
   summary?: string;
+  /**
+   * Pending meeting-request'ы рана (#0052). Идут одним массивом в этом
+   * же ответе, чтобы webview мгновенно отрисовал inbox/paused-state без
+   * отдельного round-trip'а сразу после `selectRun`. Live-обновления
+   * ниже идут через {@link RunsPendingRequestsUpdatedEvent}.
+   *
+   * Опционально: если ран только что создан и ни одной заявки ещё нет,
+   * extension может прислать undefined — webview трактует это как
+   * пустой список. Передавать `[]` тоже валидно.
+   */
+  pendingRequests?: MeetingRequestSummary[];
 }
 
 /**
@@ -287,6 +323,27 @@ export interface RunsToolAppendedEvent {
 }
 
 /**
+ * Live-обновление pending meeting-request'ов рана (#0052).
+ *
+ * Шлётся каждый раз, когда состав pending'ов мог измениться: создан
+ * новый (`team.invite`/`team.escalate` положили в очередь), резолвлен
+ * или зафейлен координатором. На стороне extension'а это всегда
+ * полный список, а не дельта: у нас на ран таких заявок единицы, выгода
+ * от дельт минимальна, а bug-surface при склейке у webview'а — заметный.
+ *
+ * UI рисует по этому событию и inbox внутри MeetingsPanel, и paused-
+ * визуал кубиков на канвасе (`RoleState.kind === 'awaiting_input'` ≈
+ * `paused` кубик), и paused-метку на карточке встречи (по
+ * `contextSessionId`). Все три места читают один и тот же массив из
+ * store — так гарантируется, что paused-state виден везде одновременно.
+ */
+export interface RunsPendingRequestsUpdatedEvent {
+  type: 'runs.pendingRequests.updated';
+  runId: string;
+  pendingRequests: MeetingRequestSummary[];
+}
+
+/**
  * Ответ на `state.getUiPrefs` — текущая мапа всех сохранённых UI-префов.
  * Если ничего ещё не сохраняли — приходит `{}`.
  */
@@ -325,5 +382,6 @@ export type ExtensionToWebviewMessage =
   | RunsAskUserEvent
   | RunsMessageAppendedEvent
   | RunsToolAppendedEvent
+  | RunsPendingRequestsUpdatedEvent
   | StateUiPrefsResult
   | StateWorkspaceResult;

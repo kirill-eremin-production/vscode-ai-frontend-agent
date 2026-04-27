@@ -6,6 +6,7 @@ import {
   readSessionMeta,
 } from '@ext/entities/run/storage';
 import { broadcast } from '@ext/features/run-management/broadcast';
+import { broadcastPendingRequests } from '@ext/features/run-management/pending-requests';
 import { HIERARCHY, areAdjacent, rolesBetween, type Role } from '@ext/team/hierarchy';
 import { buildRoleStateSnapshot } from '@ext/team/run-snapshot';
 import { roleStateFor } from '@ext/entities/run/role-state';
@@ -191,6 +192,9 @@ async function escalateHandler(
       contextSessionId: sessionId,
       message,
     });
+    // #0052: pending-список изменился — пушим live-обновление в UI,
+    // см. комментарий в `team.invite`.
+    void broadcastPendingRequests(runId);
     return {
       kind: 'queued',
       meetingRequestId: request.id,

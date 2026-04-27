@@ -1,4 +1,4 @@
-import type { ChatMessage, RunMeta } from '@shared/runs/types';
+import type { ChatMessage, MeetingRequestSummary, RunMeta } from '@shared/runs/types';
 import type { Role } from '@shared/ui';
 
 /**
@@ -10,13 +10,14 @@ import type { Role } from '@shared/ui';
  * «эта роль занята». Здесь сводим к минимально необходимому набору из
  * AC #0044: пользователь должен с одного взгляда понять, кто из ролей
  * сейчас работает, кто ждёт его ответа, а кто простаивает. `paused`
- * добавится позже в #0052 — четвёртый кубик там же.
+ * добавлен в #0052: роль поставила meeting-request и сама ждёт ответа,
+ * её agent-loop приостановлен.
  *
  * Детальная подпись (имя тула, "Архитектор думает…") по-прежнему
  * рендерится отдельно через {@link RunActivity} — это caption под
  * кубиком, не его состояние.
  */
-export type CubeState = 'idle' | 'working' | 'awaiting_user';
+export type CubeState = 'idle' | 'working' | 'awaiting_user' | 'paused';
 
 /**
  * Минимальный срез состояния рана, достаточный для определения
@@ -34,6 +35,14 @@ export type CubeState = 'idle' | 'working' | 'awaiting_user';
 export interface CubeRunState {
   meta: Pick<RunMeta, 'sessions' | 'activeSessionId' | 'status'>;
   chat: ReadonlyArray<Pick<ChatMessage, 'from'>>;
+  /**
+   * Pending meeting-requests рана (#0052). Роль в `paused`, если у неё
+   * есть pending как у `requesterRole`: она вызвала встречу и ждёт,
+   * пока резолвер поднимет адресата. Если поле не передано —
+   * paused-ветка просто никогда не сработает (back-compat для тестов и
+   * сторибуков, не знающих про pending).
+   */
+  pendingRequests?: ReadonlyArray<MeetingRequestSummary>;
 }
 
 /**
@@ -57,7 +66,17 @@ export interface CubeRunState {
  *     передала handoff — она простаивает с точки зрения active-сессии).
  */
 export function cubeStateFor(role: Role, runState: CubeRunState): CubeState {
-  const { meta, chat } = runState;
+  const { meta, chat, pendingRequests } = runState;
+
+  // #0052: paused имеет приоритет над всеми остальными ветками. Роль
+  // могла поставить заявку из активной сессии (тогда она и participant)
+  // или из bridge'а, который уже не активен. В любом случае её цикл
+  // приостановлен, и кубик должен показать клок-иконку независимо от
+  // того, что лежит в чате активной сессии.
+  if (pausedRequesteeFor(role, pendingRequests) !== undefined) {
+    return 'paused';
+  }
+
   const sessions = meta.sessions ?? [];
   const active = sessions.find((session) => session.id === meta.activeSessionId);
   if (!active) return 'idle';
@@ -91,4 +110,30 @@ export function cubeStateFor(role: Role, runState: CubeRunState): CubeState {
   }
 
   return 'idle';
+}
+
+/**
+ * Кого ждёт роль `role` по своим pending-заявкам (#0052). Возвращает
+ * имя роли-адресата, если у `role` есть pending заявка как у requester'а;
+ * иначе undefined.
+ *
+ * Если у роли несколько pending'ов одновременно (она поставила несколько
+ * встреч до того, как первый резолвится — теоретически возможно при
+ * каскадных triggers), берём самую свежую: caption «ждёт ответа от X»
+ * — это про последнюю интенцию пользователя/роли, а не про самую
+ * старую заявку. Сортировку извне не требуем.
+ */
+export function pausedRequesteeFor(
+  role: Role,
+  pendingRequests: ReadonlyArray<MeetingRequestSummary> | undefined
+): string | undefined {
+  if (!pendingRequests || pendingRequests.length === 0) return undefined;
+  let latest: MeetingRequestSummary | undefined;
+  for (const request of pendingRequests) {
+    if (request.requesterRole !== role) continue;
+    if (!latest || request.createdAt > latest.createdAt) {
+      latest = request;
+    }
+  }
+  return latest?.requesteeRole;
 }

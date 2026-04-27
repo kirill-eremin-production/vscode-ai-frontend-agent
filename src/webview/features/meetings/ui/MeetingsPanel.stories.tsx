@@ -185,6 +185,94 @@ export const FiveSessions: Story = {
 };
 
 /**
+ * Paused-кубик + inbox (#0052). Ран с pending-заявкой архитектора к
+ * программисту: карточка соответствующей сессии (`s2`) переключена в
+ * paused-визуал «ждёт ответа от программиста», а сверху добавлен
+ * inline-аналог `PendingRequestsInbox` (компонент внутренний для
+ * `MeetingsPanel.tsx`, дублируем разметку — сторис должна давать
+ * картинку без store/IPC).
+ */
+export const PausedAndInbox: Story = {
+  render: () => {
+    const session1: SessionSummary = session({
+      id: 's1',
+      createdAt: '2026-04-26T10:00:00Z',
+      status: 'done',
+      inputFrom: 'user',
+    });
+    const session2: SessionSummary = session({
+      id: 's2',
+      kind: 'agent-agent',
+      createdAt: '2026-04-26T10:30:00Z',
+      status: 'running',
+      participants: [
+        { kind: 'agent', role: 'architect' },
+        { kind: 'agent', role: 'programmer' },
+      ],
+      inputFrom: 'architect',
+      prev: ['s1'],
+    });
+    const sessions = [session2, session1];
+    const sessionsById = new Map<string, SessionSummary>(
+      sessions.map((session) => [session.id, session])
+    );
+    return (
+      <Frame title="paused + inbox (#0052)">
+        <section
+          className="flex flex-col gap-1 border border-border-subtle rounded-sm p-2 bg-[var(--vscode-input-background)]"
+          aria-label="Заявки на встречи"
+        >
+          <header className="text-[11px] text-muted font-semibold">Заявки на встречи (1)</header>
+          <ul className="list-none m-0 p-0 flex flex-col gap-1">
+            <li>
+              <button
+                type="button"
+                className="w-full text-left px-2 py-1 text-[11px] rounded-sm border border-transparent hover:bg-[var(--vscode-list-hoverBackground)]"
+              >
+                <span className="text-muted">architect</span>
+                <span aria-hidden> → </span>
+                <span className="text-muted">programmer</span>
+                <span aria-hidden>: </span>
+                <span className="text-foreground">Проверь оценку: успеваем ли в этот спринт?</span>
+              </button>
+            </li>
+          </ul>
+        </section>
+        <ul className="list-none m-0 p-0 flex flex-col gap-1 mt-2">
+          {sessions.map((session, index) => (
+            <li key={session.id}>
+              <MeetingCard
+                session={session}
+                index={sessions.length - 1 - index}
+                isActive={session.id === 's2'}
+                isLive={session.id === 's2'}
+                now={NOW}
+                preview={
+                  session.id === 's2'
+                    ? 'Архитектор: проверь оценку, успеваем ли мы в спринт?'
+                    : undefined
+                }
+                sessionsById={sessionsById}
+                viewedSessionId="s2"
+                viewedSessionFirstMessage="Архитектор: проверь оценку, успеваем ли мы в спринт?"
+                isFlashing={false}
+                pausedRequesteeRole={session.id === 's2' ? 'programmer' : undefined}
+                onSelect={() => {
+                  /* no-op */
+                }}
+                onNavigateLink={() => {
+                  /* no-op */
+                }}
+              />
+            </li>
+          ))}
+        </ul>
+      </Frame>
+    );
+  },
+};
+
+/**
  * Обёртка-«панель»: фон, рамка, ширина ≈240px (как реальная
  * правая колонка). Tab-strip и collapse-кнопку не дублируем —
  * сторис сосредоточена на содержимом ленты.

@@ -43,6 +43,7 @@ import {
   setActiveSession,
 } from '../entities/run/storage';
 import { broadcast } from '../features/run-management/broadcast';
+import { broadcastPendingRequests } from '../features/run-management/pending-requests';
 import {
   getPendingRequests,
   updateMeetingRequestStatus,
@@ -127,6 +128,9 @@ export async function resolvePending(runId: string): Promise<ResolveResult[]> {
   }
 
   const remaining = sortedByCreated.filter((request) => !handled.has(request.id));
+  if (handled.size > 0) {
+    void broadcastPendingRequests(runId);
+  }
   if (remaining.length === 0) return results;
 
   // Шаг 3-4: per-requestee приоритизация и резолв.
@@ -170,6 +174,7 @@ export async function resolvePending(runId: string): Promise<ResolveResult[]> {
     await updateMeetingRequestStatus(runId, request.id, 'resolved', {
       resolvedSessionId: sessionId,
     });
+    void broadcastPendingRequests(runId);
     busyAfterResolve.add(requesteeRole);
     results.push({ kind: 'resolved', requestId: request.id, sessionId });
 

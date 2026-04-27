@@ -1,6 +1,11 @@
 import { describe, it, expect } from 'vitest';
-import { cubeStateFor, type CubeRunState } from './cube-state';
-import type { ChatMessage, SessionSummary, UsageAggregate } from '@shared/runs/types';
+import { cubeStateFor, pausedRequesteeFor, type CubeRunState } from './cube-state';
+import type {
+  ChatMessage,
+  MeetingRequestSummary,
+  SessionSummary,
+  UsageAggregate,
+} from '@shared/runs/types';
 
 const ZERO_USAGE: UsageAggregate = {
   inputTokens: 0,
@@ -27,7 +32,8 @@ function chat(...messages: Array<Pick<ChatMessage, 'from'>>): Array<Pick<ChatMes
 
 function runState(
   over: Partial<CubeRunState['meta']>,
-  chatLog: CubeRunState['chat']
+  chatLog: CubeRunState['chat'],
+  pendingRequests?: ReadonlyArray<MeetingRequestSummary>
 ): CubeRunState {
   return {
     meta: {
@@ -37,6 +43,22 @@ function runState(
       ...over,
     },
     chat: chatLog,
+    pendingRequests,
+  };
+}
+
+function pendingRequest(
+  over: Partial<MeetingRequestSummary> & {
+    requesterRole: string;
+    requesteeRole: string;
+  }
+): MeetingRequestSummary {
+  return {
+    id: `req-${over.requesterRole}-${over.requesteeRole}`,
+    contextSessionId: 's1',
+    message: 'msg',
+    createdAt: '2026-04-26T11:00:00Z',
+    ...over,
   };
 }
 
@@ -177,6 +199,83 @@ describe('cubeStateFor', () => {
       chat({ from: 'user' }, { from: 'agent:product' })
     );
     expect(cubeStateFor('product', state)).toBe('idle');
+  });
+
+  it('paused, если у роли есть pending meeting-request как у requester', () => {
+    // #0052: architect поставил встречу с программистом и ждёт ответа.
+    // Кубик architect'а должен показать `paused`, даже если на активной
+    // сессии (которая теперь bridge product↔architect) последнее
+    // сообщение от product'а — обычно это бы дало `working`.
+    const request = pendingRequest({ requesterRole: 'architect', requesteeRole: 'programmer' });
+    const state = runState(
+      {
+        activeSessionId: 's2',
+        sessions: [
+          session({
+            id: 's2',
+            kind: 'agent-agent',
+            participants: [
+              { kind: 'agent', role: 'product' },
+              { kind: 'agent', role: 'architect' },
+            ],
+          }),
+        ],
+      },
+      chat({ from: 'agent:product' }),
+      [request]
+    );
+    expect(cubeStateFor('architect', state)).toBe('paused');
+    // Программист (requestee) сам не paused — это не его заявка.
+    expect(cubeStateFor('programmer', state)).toBe('idle');
+  });
+
+  it('paused имеет приоритет над awaiting_user', () => {
+    // Граничный случай: продакт ждёт ответа пользователя в корневой
+    // сессии и параллельно поставил meeting-request к архитектору
+    // (теоретически возможно). Главный сигнал — pending заявка, иначе
+    // пользователь не поймёт, почему «awaiting_user» висит, а ответы
+    // не двигают цикл (роль на самом деле паузнута).
+    const request = pendingRequest({ requesterRole: 'product', requesteeRole: 'architect' });
+    const state = runState(
+      {
+        activeSessionId: 's1',
+        status: 'awaiting_user_input',
+        sessions: [
+          session({
+            id: 's1',
+            status: 'awaiting_user_input',
+            participants: [{ kind: 'user' }, { kind: 'agent', role: 'product' }],
+          }),
+        ],
+      },
+      chat({ from: 'user' }, { from: 'agent:product' }),
+      [request]
+    );
+    expect(cubeStateFor('product', state)).toBe('paused');
+  });
+
+  it('pausedRequesteeFor возвращает самую свежую заявку, если их несколько', () => {
+    // Если у роли скопилось несколько pending'ов как у requester'а,
+    // в caption «ждёт ответа от X» показываем последнюю интенцию.
+    const older = pendingRequest({
+      requesterRole: 'architect',
+      requesteeRole: 'product',
+      createdAt: '2026-04-26T10:00:00Z',
+    });
+    const newer = pendingRequest({
+      requesterRole: 'architect',
+      requesteeRole: 'programmer',
+      createdAt: '2026-04-26T11:00:00Z',
+    });
+    expect(pausedRequesteeFor('architect', [older, newer])).toBe('programmer');
+    expect(pausedRequesteeFor('architect', [newer, older])).toBe('programmer');
+  });
+
+  it('pausedRequesteeFor возвращает undefined, если у роли нет pending как requester', () => {
+    const request = pendingRequest({ requesterRole: 'architect', requesteeRole: 'programmer' });
+    expect(pausedRequesteeFor('product', [request])).toBeUndefined();
+    expect(pausedRequesteeFor('architect', [])).toBeUndefined();
+    expect(pausedRequesteeFor('architect', undefined)).toBeUndefined();
   });
 
   it('idle для пустого чата', () => {

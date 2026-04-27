@@ -75,6 +75,16 @@ export interface MeetingCardProps {
    */
   isFlashing: boolean;
   /**
+   * Адресат meeting-request'а, висящего на этой сессии (#0052). Передан,
+   * если у рана есть pending заявка с `contextSessionId === session.id`:
+   * это значит, что роль-инициатор остановила свой цикл и ждёт ответа
+   * от этой роли. В таком случае карточка визуально получает статус
+   * `paused` независимо от `session.status`. Передавать paused-state
+   * через `isLive=false` нельзя: `finished` и `paused` визуально и
+   * семантически разные (завершено навсегда vs ждёт ответа).
+   */
+  pausedRequesteeRole?: string;
+  /**
    * Ref-callback на корневой элемент карточки. Родитель регистрирует
    * его в Map<sessionId, HTMLElement>, чтобы потом вызвать
    * `scrollIntoView` при навигации по prev/next. Используем
@@ -94,20 +104,23 @@ export interface MeetingCardProps {
 }
 
 /**
- * Подпись статуса для карточки. Контракт #0046: `active` (зелёная
- * точка) / `finished` (нейтрально) / `paused` (заглушка под #0052).
+ * Подпись статуса для карточки. Контракт #0046/#0052: `active` (зелёная
+ * точка) / `paused` (клок-стиль, есть pending meeting-request с
+ * contextSessionId этой сессии) / `finished` (нейтрально).
  *
- * `paused`-сессий пока нет — `RunStatus` не содержит такого значения.
- * Возвращаем `finished` для всех неактивных, а место под paused
- * закрепляем явной веткой по `awaiting_human` (после сдачи артефакта),
- * чтобы при добавлении статуса в #0052 правка локализовалась здесь.
+ * Приоритет paused над isLive: даже если у роли-инициатора локально
+ * сессия в `running`, фактически она остановлена pending-заявкой —
+ * показываем именно «paused». `_status` пока не используется (RunStatus
+ * не содержит paused-значения), но оставлен в сигнатуре для возможной
+ * будущей развязки от внешнего флага.
  */
-function statusKindFor(status: RunStatus, isLive: boolean): 'active' | 'finished' | 'paused' {
+function statusKindFor(
+  _status: RunStatus,
+  isLive: boolean,
+  pausedRequesteeRole: string | undefined
+): 'active' | 'finished' | 'paused' {
+  if (pausedRequesteeRole) return 'paused';
   if (isLive) return 'active';
-  // На текущей итерации paused не существует как статус сессии: AC явно
-  // помечает его как заглушку под #0052. Возвращаем finished, метку
-  // оставляем в классах ниже для будущей доработки.
-  if (status === 'awaiting_human') return 'finished';
   return 'finished';
 }
 
@@ -115,6 +128,18 @@ const STATUS_LABELS: Record<'active' | 'finished' | 'paused', string> = {
   active: 'активна',
   finished: 'завершена',
   paused: 'на паузе',
+};
+
+/**
+ * Род. падеж ролей для подписи «ждёт ответа от <role>» (#0052). Дублирует
+ * аналогичный маппинг из RunCanvas: модуль meeting-card живёт в фиче
+ * `meetings`, импорт из `canvas` запрещён ESLint-боундариями. На троих
+ * ролях стоимость дублирования минимальна.
+ */
+const ROLE_LABEL_GENITIVE: Record<string, string> = {
+  product: 'продакта',
+  architect: 'архитектора',
+  programmer: 'программиста',
 };
 
 export function MeetingCard(props: MeetingCardProps) {
@@ -133,14 +158,18 @@ export function MeetingCard(props: MeetingCardProps) {
     viewedSessionId,
     viewedSessionFirstMessage,
     isFlashing,
+    pausedRequesteeRole,
     onCardElement,
     onSelect,
     onNavigateLink,
   } = props;
   const startedLabel = formatStartedAt(session.createdAt, now);
   const inputFromLabel = formatInputFromLabel(session.inputFrom);
-  const statusKind = statusKindFor(session.status, isLive);
-  const statusText = STATUS_LABELS[statusKind];
+  const statusKind = statusKindFor(session.status, isLive, pausedRequesteeRole);
+  const pausedCaption = pausedRequesteeRole
+    ? `ждёт ответа от ${ROLE_LABEL_GENITIVE[pausedRequesteeRole] ?? pausedRequesteeRole}`
+    : undefined;
+  const statusText = pausedCaption ?? STATUS_LABELS[statusKind];
   const titleLabel = `Встреча ${index + 1}`;
   const participants = session.participants ?? [];
   const prevIds = session.prev ?? [];
@@ -424,10 +453,16 @@ function SessionLinkIcons(props: { icons: ReadonlyArray<Role> }): ReactNode {
  * в палитру (см. правила в AGENT.md «Стили webview»).
  */
 function StatusDot(props: { kind: 'active' | 'finished' | 'paused' }) {
+  // #0052: для paused оставляем такую же круглую точку (а не клок-иконку),
+  // чтобы вертикальный ритм карточек не «прыгал». Цвет — приглушённый
+  // warning, чтобы визуально отличалось от finished, но не выглядело
+  // как ошибка.
   const colorVar =
     props.kind === 'active'
       ? 'var(--vscode-testing-iconPassed, #4ade80)'
-      : 'var(--vscode-descriptionForeground)';
+      : props.kind === 'paused'
+        ? 'var(--vscode-charts-yellow, var(--vscode-descriptionForeground))'
+        : 'var(--vscode-descriptionForeground)';
   return (
     <span
       aria-hidden

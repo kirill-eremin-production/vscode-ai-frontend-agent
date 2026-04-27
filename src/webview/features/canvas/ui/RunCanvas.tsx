@@ -1,8 +1,15 @@
 import { Component, memo, useEffect, useMemo, useRef, useState } from 'react';
 import type { ReactNode } from 'react';
 import clsx from 'clsx';
-import { AlertCircle, CheckCircle2, HelpCircle, User as UserIcon, Wrench } from 'lucide-react';
-import type { ChatMessage, RunMeta, ToolEvent } from '@shared/runs/types';
+import {
+  AlertCircle,
+  CheckCircle2,
+  Clock,
+  HelpCircle,
+  User as UserIcon,
+  Wrench,
+} from 'lucide-react';
+import type { ChatMessage, MeetingRequestSummary, RunMeta, ToolEvent } from '@shared/runs/types';
 import { Avatar, LoadingState, type Role } from '@shared/ui';
 import {
   describeRunActivity,
@@ -19,7 +26,7 @@ import {
 } from '../layout';
 import { ownerRoleOfActiveSession, selectActiveSessionForRole } from '../select-active-session';
 import { resolveCubeDrillSession, resolveUserDrillSession } from '../drill-resolver';
-import { cubeStateFor, type CubeState } from '../cube-state';
+import { cubeStateFor, pausedRequesteeFor, type CubeState } from '../cube-state';
 
 /**
  * Канвас команды агентов в виде org-chart'а (#0042).
@@ -48,6 +55,14 @@ export interface RunCanvasProps {
    * рендерим как пустой чат, и все кубики получают `idle`.
    */
   chat?: ChatMessage[];
+  /**
+   * Pending meeting-requests рана (#0052). Кубики ролей-инициаторов
+   * получают cube-state `paused` с клок-иконкой и подписью «ждёт
+   * ответа от <role>». Опционально для обратной совместимости со
+   * сторибуками/тестами, не передающими это поле — отсутствие списка
+   * эквивалентно «paused-веток нет».
+   */
+  pendingRequests?: ReadonlyArray<MeetingRequestSummary>;
   onSwitchToChat?: () => void;
   /** Drill-in (#0026): открыть выбранную сессию на вкладке «Чат». */
   onDrillIn?: (sessionId: string) => void;
@@ -61,7 +76,7 @@ export function RunCanvas(props: RunCanvasProps) {
   );
 }
 
-function RunCanvasInner({ meta, tools, chat, onDrillIn }: RunCanvasProps) {
+function RunCanvasInner({ meta, tools, chat, pendingRequests, onDrillIn }: RunCanvasProps) {
   const layout = useMemo(() => layoutCanvas(meta), [meta]);
   // Один тикер на канвас — перерасчёт «N мин назад».
   // 60 сек хватает: меньшая разрешающая способность чем у formatRelativeTime.
@@ -73,6 +88,7 @@ function RunCanvasInner({ meta, tools, chat, onDrillIn }: RunCanvasProps) {
         meta={meta}
         tools={tools}
         chat={chat ?? EMPTY_CHAT}
+        pendingRequests={pendingRequests ?? EMPTY_PENDING_REQUESTS}
         now={now}
         onDrillIn={onDrillIn}
       />
@@ -83,6 +99,7 @@ function RunCanvasInner({ meta, tools, chat, onDrillIn }: RunCanvasProps) {
 // Стабильная пустая ссылка — чтобы memo'нутые ноды не пересоздавались
 // каждый рендер из-за «нового» массива по умолчанию.
 const EMPTY_CHAT: ChatMessage[] = [];
+const EMPTY_PENDING_REQUESTS: ReadonlyArray<MeetingRequestSummary> = [];
 
 /**
  * Возвращает «текущее время» в виде Date, обновляемое каждые `intervalMs`.
@@ -106,6 +123,7 @@ function CanvasViewport(props: {
   meta: RunMeta;
   tools: ToolEvent[];
   chat: ChatMessage[];
+  pendingRequests: ReadonlyArray<MeetingRequestSummary>;
   now: Date;
   onDrillIn?: (sessionId: string) => void;
 }) {
@@ -255,12 +273,22 @@ function CanvasViewport(props: {
           const drillSessionId = props.onDrillIn
             ? resolveCubeDrillSession(node.role, props.meta)
             : undefined;
+          const cubeState = cubeStateFor(node.role, {
+            meta: props.meta,
+            chat: props.chat,
+            pendingRequests: props.pendingRequests,
+          });
+          const pausedRequestee =
+            cubeState === 'paused'
+              ? pausedRequesteeFor(node.role, props.pendingRequests)
+              : undefined;
           return (
             <CanvasNodeView
               key={node.id}
               node={node}
               activity={activityForNode(node, props.meta, props.tools)}
-              cubeState={cubeStateFor(node.role, { meta: props.meta, chat: props.chat })}
+              cubeState={cubeState}
+              pausedRequesteeRole={pausedRequestee}
               now={props.now}
               drillSessionId={drillSessionId}
               onDrillIn={
@@ -387,6 +415,12 @@ interface CanvasNodeViewProps {
    * имя текущего тула («Архитектор: вызов `kb.list`…»).
    */
   cubeState: CubeState;
+  /**
+   * Адресат meeting-request'а, которого ждёт роль (#0052). Передан
+   * только когда `cubeState === 'paused'`. Подставляется в caption
+   * «ждёт ответа от <role>», заменяя обычный `activity.label`.
+   */
+  pausedRequesteeRole?: string;
   now: Date;
   /**
    * Drill-in (#0026): id сессии, в которую уйдёт клик/Enter. Используется
@@ -407,13 +441,23 @@ interface CanvasNodeViewProps {
  * Все `data-canvas-*`-атрибуты — стабильные хуки для e2e (TC-37+).
  */
 const CanvasNodeView = memo(function CanvasNodeView(props: CanvasNodeViewProps) {
-  const { node, activity, cubeState, now, drillSessionId, onDrillIn } = props;
+  const { node, activity, cubeState, pausedRequesteeRole, now, drillSessionId, onDrillIn } = props;
   const tone = toneForCubeState(cubeState, activity.kind);
   // Спиннер показываем когда кубик «working» (любой подкатегории —
   // thinking/tool — или просто ждём ответа роли по последнему сообщению).
+  // Для paused наоборот — никакого спиннера: визуально это «застыло».
   const showSpinner =
-    cubeState === 'working' || activity.kind === 'thinking' || activity.kind === 'tool';
+    cubeState !== 'paused' &&
+    (cubeState === 'working' || activity.kind === 'thinking' || activity.kind === 'tool');
   const relTime = node.lastActivityAt ? formatRelativeTime(node.lastActivityAt, now) : undefined;
+  // #0052: для paused-кубика подменяем caption: вместо общего
+  // activity.label («ждёт ответа человека» и пр.) показываем
+  // конкретный «ждёт ответа от <role>». Это нужный сигнал для
+  // юзера — увидеть, кого именно ждёт каждая роль команды.
+  const captionLabel =
+    cubeState === 'paused' && pausedRequesteeRole
+      ? `ждёт ответа от ${ROLE_LABEL_GENITIVE[pausedRequesteeRole] ?? pausedRequesteeRole}`
+      : activity.label;
   return (
     <g
       data-canvas-role={node.role}
@@ -440,9 +484,10 @@ const CanvasNodeView = memo(function CanvasNodeView(props: CanvasNodeViewProps) 
         height={node.height}
         rx={6}
         ry={6}
-        fill="var(--vscode-input-background)"
+        fill={tone.fill}
         stroke={tone.borderColor}
         strokeWidth={tone.borderWidth}
+        opacity={tone.opacity}
       />
       {/*
        * Пульсирующий индикатор «working» (#0044). Маленький кружок в
@@ -461,6 +506,26 @@ const CanvasNodeView = memo(function CanvasNodeView(props: CanvasNodeViewProps) 
         >
           <animate attributeName="opacity" values="0.3;1;0.3" dur="1.4s" repeatCount="indefinite" />
         </circle>
+      )}
+      {/*
+       * #0052: клок-иконка для paused-кубика. Рисуется в том же углу,
+       * что и working-pulse, но статично (никакой анимации — кубик
+       * «застыл»). Цвет — нейтральный muted, чтобы визуально это
+       * читалось как «не активен», а не как тревожный сигнал.
+       */}
+      {cubeState === 'paused' && (
+        <foreignObject
+          data-canvas-cube-pause-icon
+          x={node.width - 18}
+          y={2}
+          width={16}
+          height={16}
+          aria-hidden
+        >
+          <div className="flex h-full w-full items-center justify-center text-muted">
+            <Clock size={12} />
+          </div>
+        </foreignObject>
       )}
       {/* Цветная полоса акцента слева — по роли */}
       <rect
@@ -483,9 +548,9 @@ const CanvasNodeView = memo(function CanvasNodeView(props: CanvasNodeViewProps) 
           <div
             className="text-[11px] text-muted truncate"
             data-canvas-activity-label
-            title={activity.label}
+            title={captionLabel}
           >
-            {showSpinner ? <LoadingState label={activity.label} /> : activity.label || '—'}
+            {showSpinner ? <LoadingState label={captionLabel} /> : captionLabel || '—'}
           </div>
           {relTime && (
             <div className="text-[10px] text-muted/80" title={relTime.tooltip}>
@@ -499,39 +564,63 @@ const CanvasNodeView = memo(function CanvasNodeView(props: CanvasNodeViewProps) 
 });
 
 interface NodeTone {
+  fill: string;
   borderColor: string;
   borderWidth: number;
+  /** SVG opacity для всего кубика. < 1 — визуальное «затемнение» paused. */
+  opacity: number;
 }
 
 /**
  * Цвет/толщина рамки кубика. Cube-state (#0044) — основной драйвер:
  * `awaiting_user` всегда даёт жёлтую рамку, `working` — синюю акцентную,
- * `idle` — нейтральную. Дополнительно `failed` из детального activity
- * перекрывает idle красной рамкой: cube-state не различает done/failed,
- * но визуально красный сигнал об ошибке мы хотим сохранить.
+ * `idle` — нейтральную, `paused` (#0052) — нейтральная рамка плюс
+ * сниженная opacity (визуально «застыло»). Дополнительно `failed` из
+ * детального activity перекрывает idle красной рамкой: cube-state не
+ * различает done/failed, но визуально красный сигнал об ошибке мы
+ * хотим сохранить.
  */
 function toneForCubeState(cubeState: CubeState, activityKind: RunActivityKind): NodeTone {
+  const baseFill = 'var(--vscode-input-background)';
+  if (cubeState === 'paused') {
+    return {
+      fill: baseFill,
+      borderColor: 'var(--border-subtle, var(--vscode-input-border, #444))',
+      borderWidth: 1,
+      // 0.6: достаточно, чтобы кубик читался как «приглушённый», но не
+      // настолько, чтобы текст под ним стало невозможно прочитать.
+      opacity: 0.6,
+    };
+  }
   if (cubeState === 'awaiting_user') {
     return {
+      fill: baseFill,
       borderColor: 'var(--vscode-inputValidation-warningBorder, var(--vscode-charts-yellow))',
       borderWidth: 2,
+      opacity: 1,
     };
   }
   if (cubeState === 'working') {
     return {
+      fill: baseFill,
       borderColor: 'var(--vscode-focusBorder, var(--vscode-charts-blue))',
       borderWidth: 2,
+      opacity: 1,
     };
   }
   if (activityKind === 'failed') {
     return {
+      fill: baseFill,
       borderColor: 'var(--vscode-inputValidation-errorBorder, var(--vscode-errorForeground))',
       borderWidth: 2,
+      opacity: 1,
     };
   }
   return {
+    fill: baseFill,
     borderColor: 'var(--border-subtle, var(--vscode-input-border, #444))',
     borderWidth: 1,
+    opacity: 1,
   };
 }
 
@@ -593,6 +682,18 @@ const ROLE_LABEL: Record<Role, string> = {
   programmer: 'Программист',
   user: 'Вы',
   system: 'Система',
+};
+
+/**
+ * Роль в родительном падеже для подписи «ждёт ответа от <role>» (#0052).
+ * Не используем общий `ROLE_LABEL`: «ждёт ответа от Продакт» звучит
+ * криво. Падежи фиксируем строкой — на горизонте у нас три роли,
+ * автоматическая морфология не нужна.
+ */
+const ROLE_LABEL_GENITIVE: Record<string, string> = {
+  product: 'продакта',
+  architect: 'архитектора',
+  programmer: 'программиста',
 };
 
 /**

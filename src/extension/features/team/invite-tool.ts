@@ -6,6 +6,7 @@ import {
   readSessionMeta,
 } from '@ext/entities/run/storage';
 import { broadcast } from '@ext/features/run-management/broadcast';
+import { broadcastPendingRequests } from '@ext/features/run-management/pending-requests';
 import { HIERARCHY, areAdjacent, type Role } from '@ext/team/hierarchy';
 import { buildRoleStateSnapshot } from '@ext/team/run-snapshot';
 import { roleStateFor } from '@ext/entities/run/role-state';
@@ -157,6 +158,11 @@ async function inviteHandler(
       contextSessionId: sessionId,
       message,
     });
+    // #0052: pending-список изменился — толкаем live-обновление в UI,
+    // чтобы paused-кубик инициатора и inbox в MeetingsPanel загорелись
+    // мгновенно, без отдельного `runs.get`. Не await'им: broadcast —
+    // best-effort, его сбой не должен валить tool-handler.
+    void broadcastPendingRequests(runId);
     return {
       kind: 'queued',
       meetingRequestId: request.id,

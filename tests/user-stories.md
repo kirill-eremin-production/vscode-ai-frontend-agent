@@ -1155,3 +1155,73 @@ meeting-request <id> resolved (reply from <role>, session <sid>)` (см.
 - E2E проверка ручная (TC-58): прогон lint+build+test:unit, ручная
   симуляция через DevTools-консоль (создание заявки → проверка `queued`
   → резолв через `triggerResolvePending` → пробуждение инициатора).
+
+## US-51. UI показывает paused-состояние и инбокс заявок на встречи
+
+Задача #0052 — заключительный UI-кусок системы meeting-request. До неё всё
+работало под капотом: тулы ставили заявки (#0051), координатор резолвил
+(#0050), agent-loop ждал. Но на канвасе и в журнале встреч это никак
+не отражалось — пользователь видел «активную» сессию рана и кубик
+архитектора в `working`, не понимая, почему он застрял.
+
+Acceptance:
+
+- Канвас (`features/canvas/cube-state.ts`/`RunCanvas.tsx`):
+  - В `CubeState` добавлен вариант `paused`. У него отдельный визуал:
+    клок-иконка в правом-верхнем углу кубика (`data-canvas-cube-pause-icon`)
+    - понижённая `opacity` всего кубика. Спиннер `working` для paused
+      подавляется.
+  - `cubeStateFor(role, runState)` берёт `pendingRequests` из
+    `CubeRunState` и возвращает `paused`, если у роли есть pending
+    meeting-request как у `requesterRole`. Приоритет — выше, чем у
+    `awaiting_user`/`working`/`idle` (роль на самом деле приостановлена
+    своим запросом).
+  - `pausedRequesteeFor(role, pendingRequests)` — pure helper, возвращает
+    адресата самой свежей pending-заявки роли. Используется для
+    подписи под кубиком: «ждёт ответа от <род. падеж>».
+- Карточка встречи (`features/meetings/ui/MeetingCard.tsx`):
+  - Новый prop `pausedRequesteeRole?: string`. Если передан,
+    `statusKindFor` возвращает `paused` независимо от `isLive`/`status`,
+    подпись статуса заменяется на «ждёт ответа от <роль>». Цвет
+    `StatusDot` для paused — `--vscode-charts-yellow` (отличимо и от
+    finished-серого, и от active-зелёного).
+  - В `MeetingsPanel` карточка сессии получает `pausedRequesteeRole`,
+    если есть pending meeting-request с
+    `contextSessionId === session.id` (мапа строится один раз через
+    useMemo).
+- Inbox `PendingRequestsInbox` внутри `MeetingsPanel`:
+  - Новая секция над списком встреч, видна только если у рана есть
+    pending-заявки. Заголовок «Заявки на встречи (N)», список
+    отсортирован по `createdAt asc`.
+  - Каждый элемент — кнопка с разметкой
+    «<requesterRole> → <requesteeRole>: <preview>», превью обрезается
+    до 80 символов. Клик делает `drillIntoSession(runId, contextSessionId)` —
+    тот же drill-in, что у карточек встреч.
+  - Live-обновление: при создании заявки (`team.invite`/`team.escalate`
+    в queued-ветке) и резолве/deadlock-fail в `meeting-resolver`
+    extension шлёт `runs.pendingRequests.updated` через
+    `broadcastPendingRequests(runId)`. Webview-store перезаписывает
+    `pendingRequestsByRun[runId]` целиком — мерджить нечего, extension
+    знает актуальный snapshot.
+- IPC и store:
+  - `RunsGetResult` и event `runs.pendingRequests.updated` несут
+    `MeetingRequestSummary[]` (id/requesterRole/requesteeRole/
+    contextSessionId/message/createdAt). Поля `resolvedAt`/
+    `resolvedSessionId`/`failureReason` в IPC не уходят: webview
+    работает только с pending'ами, для них эти поля всегда undefined.
+  - `selectPendingRequests(state, runId)` — единый селектор,
+    используется и в `RunDetails` (для канваса), и в `MeetingsPanel`.
+- Storybook: `Features/Canvas/Cube states` получил story с paused-кубиком
+  (architect ждёт programmer); `Features/Meetings/Panel` получил
+  `PausedAndInbox` со списком inbox + paused-карточкой.
+- Тесты: `cube-state.test.ts` фиксирует ветки `paused` (приоритет
+  над awaiting_user; pausedRequesteeFor для нескольких/нулевых заявок).
+- E2E TC-59 (manual): создать ран, поставить заявку через DevTools
+  (`team.invite` адресату-busy), убедиться, что:
+  - В инбоксе появилась строка «<from> → <to>: <preview>»;
+  - Кубик инициатора получил `data-canvas-cube-state="paused"` и
+    клок-иконку;
+  - Карточка соответствующей сессии в журнале — `data-meeting-status="paused"`
+    с подписью «ждёт ответа от <роль>»;
+  - После `triggerResolvePending(runId)` элемент инбокса исчезает,
+    кубик возвращается в `working`/`idle`, карточка — в обычный статус.
