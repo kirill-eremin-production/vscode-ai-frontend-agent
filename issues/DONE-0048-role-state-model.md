@@ -1,7 +1,7 @@
 ---
 id: 0048
 title: Модель состояния роли — idle/busy/awaiting_input
-status: open
+status: done
 created: 2026-04-26
 ---
 
@@ -33,3 +33,17 @@ created: 2026-04-26
 
 - Подзадача #0031.
 - Блокирует: #0050, #0052.
+
+## Outcome
+
+Реализовано в `src/extension/entities/run/role-state.ts`: чистая
+`roleStateFor(role, runState)` с discriminated union
+`idle/busy/awaiting_input` и селектор `selectRoleStates(runState):
+Record<Role, RoleState>` по всей `HIERARCHY`. `MeetingRequest`
+объявлен локальным structural-интерфейсом (`id`/`requesterRole`/
+`status`/`createdAt`) — реальный storage подключится в #0049 без
+правки контракта. Юниты в `role-state.test.ts` покрывают все ветки
+AC + граничные случаи (приоритет awaiting_input над busy, выбор
+самого старого pending по `createdAt`, финальные статусы сессий
+не делают busy, пустой чат, не-участник). Зафиксировано: US-47,
+TC-55. Коммит реализации — 4cbe411.
