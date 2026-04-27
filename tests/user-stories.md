@@ -951,3 +951,44 @@ behavior:'smooth'})` и подсвечивает её визуально на ~1
 - Ничего, кроме prev/next, в карточке не меняется: участники, время,
   inputFrom, статус и preview работают по тем же правилам, что и в
   US-45.
+
+## US-47. (инфраструктурно) Модель состояния роли idle/busy/awaiting_input
+
+Задача #0048 — derived-функция, которая по снэпшоту рана отвечает «занята
+ли сейчас роль и чем именно». Прямого UI-эффекта на этой итерации нет:
+функция готовит контракт для координатора встреч (#0050) и UI-индикатора
+`paused` (#0052). Контракт фиксируется тестами.
+
+Прямого пользовательского сценария нет (UI-выходы появятся в #0052), но
+закрепляем инвариант, на котором будут строиться #0050/#0051.
+
+Acceptance (закрепление контракта `roleStateFor` / `selectRoleStates`):
+
+- `roleStateFor(role, runState)` возвращает discriminated union
+  `{kind: 'idle'} | {kind: 'busy', sessionId} | {kind: 'awaiting_input',
+meetingRequestId}` — ровно эти три варианта, ничего лишнего.
+- Для пустого рана (нет сессий, нет meeting-requests) возвращается
+  `{kind: 'idle'}` для любой роли иерархии.
+- Если в `runState.meetingRequests` есть `pending`-запись с
+  `requesterRole === role` — результат `awaiting_input(meetingRequestId)`
+  даже при наличии сессии «к роли обратились»: agent-loop роли
+  приостановлен запросом, формально она ждёт ответа.
+- При нескольких pending-запросах от роли возвращается самый старый по
+  `createdAt` (UX «роль ждёт первый, заблокировавший её»).
+- Запросы со статусами `resolved` и `failed`, а также pending-запросы от
+  другой роли — игнорируются.
+- Если pending-запросов от роли нет, проверяются сессии: для активной
+  (статус не в {`done`, `failed`, `compacted`}) сессии, в `participants`
+  которой есть `{kind: 'agent', role}`, и `lastMessageFrom !==
+"agent:${role}"` (и не `undefined`) — результат
+  `busy(sessionId)`. При нескольких таких сессиях выбирается первая в
+  порядке массива.
+- Сессии в финальных статусах (`done`/`failed`/`compacted`) и сессии без
+  сообщений (`lastMessageFrom === undefined`) не делают роль busy.
+- `selectRoleStates(runState)` возвращает `Record<Role, RoleState>` ровно
+  с ключами из `HIERARCHY` (`product`, `architect`, `programmer`); ключа
+  `user` в результате нет — `User` — особый участник и его busy/idle не
+  моделируется (#0031).
+- `MeetingRequest` в этой задаче — локальный structural-интерфейс
+  (`id`/`requesterRole`/`status`/`createdAt`); реальный storage
+  подключится в #0049 без правки `roleStateFor`.
