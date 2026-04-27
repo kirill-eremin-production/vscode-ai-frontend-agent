@@ -4,9 +4,12 @@ import { Badge, IconButton } from '@shared/ui';
 import {
   selectSessionsPanelCollapsed,
   selectSession,
+  selectSidePanelTab,
   setSessionsPanelCollapsed,
+  setSidePanelTab,
   useRunsState,
 } from '@shared/runs/store';
+import type { SidePanelTab } from '@shared/runs/store';
 import type { SessionSummary } from '@shared/runs/types';
 
 /**
@@ -27,6 +30,7 @@ import type { SessionSummary } from '@shared/runs/types';
 export function SessionsPanel() {
   const state = useRunsState();
   const collapsed = selectSessionsPanelCollapsed(state);
+  const activeTab = selectSidePanelTab(state);
   const meta = state.selectedDetails?.meta;
   const runId = state.selectedId;
   const sessionsCount = meta?.sessions.length ?? 0;
@@ -40,6 +44,7 @@ export function SessionsPanel() {
       <aside
         className="flex flex-col items-center gap-1 py-1 border-l border-border bg-surface-elevated"
         aria-label="Сессии рана (свёрнуто)"
+        data-side-panel-tab={activeTab}
       >
         <IconButton
           aria-label="Развернуть панель сессий"
@@ -64,9 +69,13 @@ export function SessionsPanel() {
     <aside
       className="flex flex-col min-h-0 border-l border-border bg-surface-elevated"
       aria-label="Сессии рана"
+      data-side-panel-tab={activeTab}
     >
-      <header className="flex items-center justify-between gap-2 px-2 py-1.5 border-b border-border-subtle">
-        <span className="text-[12px] font-semibold leading-none">Сессии</span>
+      <header className="flex items-center justify-between gap-2 px-2 py-1 border-b border-border-subtle">
+        <SidePanelTabs
+          activeTab={activeTab}
+          onChange={(next) => runId && setSidePanelTab(runId, next)}
+        />
         <IconButton
           aria-label="Свернуть панель сессий"
           icon={<ChevronRight size={14} aria-hidden />}
@@ -89,6 +98,45 @@ export function SessionsPanel() {
         )}
       </div>
     </aside>
+  );
+}
+
+/**
+ * Tab-strip между «Сессии» и «Встречи» (#0046). Симметричный близнец
+ * `SidePanelTabs` из `features/meetings`. Дублируется намеренно:
+ * boundaries-плагин запрещает кросс-импорт между фичами, а выносить
+ * пять кнопок в отдельную фичу `side-area` преждевременно.
+ */
+function SidePanelTabs(props: { activeTab: SidePanelTab; onChange: (next: SidePanelTab) => void }) {
+  const tabs: ReadonlyArray<{ id: SidePanelTab; label: string; title: string }> = [
+    { id: 'sessions', label: 'Сессии', title: 'Дерево сессий рана' },
+    { id: 'meetings', label: 'Встречи', title: 'Журнал встреч рана' },
+  ];
+  return (
+    <nav className="flex items-center gap-1" role="tablist" aria-label="Разделы боковой панели">
+      {tabs.map((tab) => {
+        const isActive = tab.id === props.activeTab;
+        return (
+          <button
+            key={tab.id}
+            type="button"
+            role="tab"
+            aria-selected={isActive}
+            data-side-panel-tab-button={tab.id}
+            onClick={() => props.onChange(tab.id)}
+            title={tab.title}
+            className={
+              'px-2 py-0.5 text-[11px] rounded-sm border ' +
+              (isActive
+                ? 'bg-[var(--vscode-list-activeSelectionBackground)] text-[var(--vscode-list-activeSelectionForeground)] border-border'
+                : 'bg-transparent text-foreground border-transparent hover:bg-[var(--vscode-list-hoverBackground)]')
+            }
+          >
+            {tab.label}
+          </button>
+        );
+      })}
+    </nav>
   );
 }
 

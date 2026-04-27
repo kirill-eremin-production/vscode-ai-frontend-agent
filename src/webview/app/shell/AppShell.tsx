@@ -1,5 +1,6 @@
 import { SessionsPanel } from '@features/sessions-panel';
-import { selectSessionsPanelCollapsed, useRunsState } from '@shared/runs/store';
+import { MeetingsPanel } from '@features/meetings';
+import { selectSessionsPanelCollapsed, selectSidePanelTab, useRunsState } from '@shared/runs/store';
 import { MainArea } from './MainArea';
 import { RunListPanel } from './RunListPanel';
 
@@ -24,6 +25,10 @@ const COLUMN_COLLAPSED = '32px';
 export function AppShell() {
   const state = useRunsState();
   const sessionsCollapsed = selectSessionsPanelCollapsed(state);
+  // #0046: правая колонка переключается между двумя секциями. Сам
+  // выбор сечения хранится per-run в store; collapsed-state остаётся
+  // общим (одна колонка в grid'е, что бы внутри ни рендерилось).
+  const sidePanelTab = selectSidePanelTab(state);
 
   const gridTemplate = `${state.leftPanelCollapsed ? COLUMN_COLLAPSED : COLUMN_EXPANDED} 1fr ${
     sessionsCollapsed ? COLUMN_COLLAPSED : COLUMN_EXPANDED
@@ -36,7 +41,7 @@ export function AppShell() {
     >
       <RunListPanel collapsed={state.leftPanelCollapsed} />
       <MainArea />
-      <SessionsPanel />
+      {sidePanelTab === 'meetings' ? <MeetingsPanel /> : <SessionsPanel />}
     </div>
   );
 }

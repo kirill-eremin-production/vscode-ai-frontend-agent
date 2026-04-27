@@ -136,11 +136,25 @@ interface RunsState {
    * `mainArea.lastSession.<runId>`.
    */
   lastViewedSessionByRun: Record<string, string>;
+  /**
+   * Per-run выбор таба правой side-area (#0046): 'sessions' — дерево
+   * сессий, 'meetings' — журнал встреч. Дефолт — 'sessions': журнал
+   * добавился новой секцией, не должен ломать привычку существующих
+   * пользователей. Persist'ится под ключом `sidePanel.tab.<runId>`.
+   */
+  sidePanelTabByRun: Record<string, SidePanelTab>;
 }
 
 export type RunDetailsTab = 'canvas' | 'chat';
 
 export type MainAreaMode = 'run-details' | 'new-run' | 'empty';
+
+/**
+ * Тип таба правой side-area (#0046). Совпадает с ключом в
+ * `state.sidePanelTabByRun`. Экспортируется для UI-компонентов
+ * tab-strip в `features/sessions-panel` и `features/meetings`.
+ */
+export type SidePanelTab = 'sessions' | 'meetings';
 
 const initialState: RunsState = {
   runs: [],
@@ -162,6 +176,7 @@ const initialState: RunsState = {
   pendingByKey: {},
   runDetailsTabByRun: {},
   lastViewedSessionByRun: {},
+  sidePanelTabByRun: {},
 };
 
 /** Пометить локальный pending-флаг для произвольной операции (#0022). */
@@ -212,6 +227,17 @@ const LAST_VIEWED_SESSION_PREF_PREFIX = 'mainArea.lastSession.';
 
 function lastViewedSessionPrefKey(runId: string): string {
   return `${LAST_VIEWED_SESSION_PREF_PREFIX}${runId}`;
+}
+
+/**
+ * Префикс per-run UI-префов таба правой side-area (#0046). Конкретный
+ * ключ — `sidePanel.tab.<runId>`. Дефолт — 'sessions' (см. селектор
+ * {@link selectSidePanelTab}).
+ */
+const SIDE_PANEL_TAB_PREF_PREFIX = 'sidePanel.tab.';
+
+function sidePanelTabPrefKey(runId: string): string {
+  return `${SIDE_PANEL_TAB_PREF_PREFIX}${runId}`;
 }
 
 /**
@@ -550,6 +576,36 @@ export function setSessionsPanelCollapsed(runId: string, collapsed: boolean): vo
 }
 
 /**
+ * Записать выбранный таб правой side-area для конкретного рана (#0046).
+ * Optimistic update + persist через UI-префы. Меняет только маппинг —
+ * AppShell сам перерендерит ту панель, которую теперь должен показать.
+ */
+export function setSidePanelTab(runId: string, tab: SidePanelTab): void {
+  setState((prev) => {
+    if (prev.sidePanelTabByRun[runId] === tab) return prev;
+    return {
+      ...prev,
+      sidePanelTabByRun: { ...prev.sidePanelTabByRun, [runId]: tab },
+    };
+  });
+  send({ type: 'state.setUiPref', key: sidePanelTabPrefKey(runId), value: tab });
+}
+
+/**
+ * Эффективный таб правой side-area для текущего выбранного рана (#0046).
+ * Без выбранного рана — 'sessions' как нейтральный дефолт (на пустом
+ * экране всё равно будет collapsed-rail). Если в state записан явный
+ * выбор — берём его, иначе fallback'имся в 'sessions': журнал встреч —
+ * дополнительная секция, она не должна автоматически перебивать
+ * привычное дерево сессий.
+ */
+export function selectSidePanelTab(state: RunsState): SidePanelTab {
+  const runId = state.selectedId;
+  if (!runId) return 'sessions';
+  return state.sidePanelTabByRun[runId] ?? 'sessions';
+}
+
+/**
  * Эффективное «свёрнута ли правая панель» для текущего выбранного рана.
  * Контракт #0019:
  *  - явный выбор пользователя (`sessionsPanelCollapsedByRun[selectedId]`)
@@ -678,6 +734,9 @@ export function useRunsWiring(): void {
             };
             const tabByRun: Record<string, RunDetailsTab> = { ...prev.runDetailsTabByRun };
             const lastViewedByRun: Record<string, string> = { ...prev.lastViewedSessionByRun };
+            const sidePanelTabByRun: Record<string, SidePanelTab> = {
+              ...prev.sidePanelTabByRun,
+            };
             for (const [key, value] of Object.entries(data.prefs)) {
               if (key.startsWith(SESSIONS_PANEL_PREF_PREFIX)) {
                 if (typeof value === 'boolean') {
@@ -697,6 +756,12 @@ export function useRunsWiring(): void {
                 }
                 continue;
               }
+              if (key.startsWith(SIDE_PANEL_TAB_PREF_PREFIX)) {
+                if (value === 'sessions' || value === 'meetings') {
+                  sidePanelTabByRun[key.slice(SIDE_PANEL_TAB_PREF_PREFIX.length)] = value;
+                }
+                continue;
+              }
             }
             return {
               ...prev,
@@ -704,6 +769,7 @@ export function useRunsWiring(): void {
               sessionsPanelCollapsedByRun: sessionsByRun,
               runDetailsTabByRun: tabByRun,
               lastViewedSessionByRun: lastViewedByRun,
+              sidePanelTabByRun,
             };
           });
           return;
