@@ -1,7 +1,7 @@
 ---
 id: 0049
 title: MeetingRequest — сущность и storage
-status: open
+status: done
 created: 2026-04-26
 ---
 
@@ -47,3 +47,21 @@ created: 2026-04-26
 
 - Подзадача #0031.
 - Блокирует: #0050, #0051.
+
+## Outcome
+
+- Реализовано append-only хранилище заявок на встречу:
+  [`src/extension/entities/run/meeting-request.ts`](../src/extension/entities/run/meeting-request.ts)
+  с API `createMeetingRequest`/`updateMeetingRequestStatus`/`listMeetingRequests`/`getPendingRequests`.
+  Артефакт лежит в `.agents/runs/<runId>/meeting-requests.jsonl`; folding
+  «последняя запись по id побеждает» — на чтении.
+- Покрытие: 11 unit-тестов в
+  [`meeting-request.test.ts`](../src/extension/entities/run/meeting-request.test.ts)
+  (создание/чтение, last-wins, восстановление после рестарта,
+  осиротевшие апдейты, getPendingRequests, битые строки), US-48 и
+  ручной [TC-56](../tests/e2e/specs/tc-56-meeting-request-storage.md).
+- Из `storage.ts` экспортирован `getRunDir`, чтобы соседние модули
+  складывали свои jsonl-артефакты в ту же папку рана без дублирования
+  констант.
+- Логика «когда создавать/резолвить» сюда не входит — это #0050/#0051.
+- Коммиты: 6da8c03 (impl).
