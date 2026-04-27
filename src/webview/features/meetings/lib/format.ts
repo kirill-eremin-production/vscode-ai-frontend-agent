@@ -129,6 +129,74 @@ export function formatInputFromLabel(inputFrom: string | undefined): string | un
 }
 
 /**
+ * Первое непустое сообщение ленты — текст без переносов и табов.
+ *
+ * Используется в tooltip'е prev/next-ссылок (#0047): «время + первое
+ * сообщение» помогает узнать сессию, не открывая её. В отличие от
+ * {@link getMessagePreview}, идём с начала ленты — пользователь
+ * ассоциирует сессию с её «вступительной» репликой, а не с текущим
+ * хвостом. Truncate для tooltip делает {@link summarizeSessionForLink},
+ * здесь только нормализуем whitespace.
+ */
+export function getFirstMessageText(
+  messages: ReadonlyArray<Pick<ChatMessage, 'text'>>
+): string | undefined {
+  for (const message of messages) {
+    const text = (message.text ?? '').replace(/\s+/g, ' ').trim();
+    if (text.length > 0) return text;
+  }
+  return undefined;
+}
+
+/**
+ * Сводка о сессии для prev/next-ссылки в карточке встречи (#0047 AC):
+ *  - `icons` — уникальные роли участников в порядке появления; рисуются
+ *    в ссылке без подписей (компактно, без переноса строки);
+ *  - `tooltip` — `«HH:MM · первое сообщение»` либо просто `«HH:MM»`,
+ *    если первого сообщения для этой сессии у нас нет (chat-лента
+ *    хранится в store только для просматриваемой сессии — для
+ *    остальных сессий передаётся `undefined`, и в tooltip остаётся
+ *    одно время; ограничение прозрачно описано в Outcome #0046).
+ *
+ * Tooltip-длина ограничена ~80 кодпоинтами через `Array.from` —
+ * длинная первая реплика не должна растягивать всплывашку на весь
+ * экран. Невалидную дату отдаём строкой «как пришла», как и в
+ * {@link formatStartedAt}: лучше показать сырой timestamp, чем
+ * «Invalid Date».
+ */
+export interface SessionLinkSummary {
+  icons: Role[];
+  tooltip: string;
+}
+
+export function summarizeSessionForLink(
+  session: SessionSummary,
+  firstMessage?: string
+): SessionLinkSummary {
+  const seen = new Set<Role>();
+  const icons: Role[] = [];
+  for (const participant of session.participants ?? []) {
+    const role = participantToRole(participant);
+    if (seen.has(role)) continue;
+    seen.add(role);
+    icons.push(role);
+  }
+  const date = new Date(session.createdAt);
+  const timeLabel = Number.isNaN(date.getTime())
+    ? session.createdAt
+    : date.toLocaleTimeString('ru-RU', { hour: '2-digit', minute: '2-digit' });
+  const trimmed = (firstMessage ?? '').replace(/\s+/g, ' ').trim();
+  if (trimmed.length === 0) return { icons, tooltip: timeLabel };
+  const TOOLTIP_PREVIEW_MAX = 80;
+  const codepoints = Array.from(trimmed);
+  const preview =
+    codepoints.length <= TOOLTIP_PREVIEW_MAX
+      ? trimmed
+      : `${codepoints.slice(0, TOOLTIP_PREVIEW_MAX - 1).join('')}…`;
+  return { icons, tooltip: `${timeLabel} · ${preview}` };
+}
+
+/**
  * Маппит участника сессии в `Role` для атома `Avatar` (#0016).
  * Зеркалит `participantToRoleInfo` из `features/chat/lib/roles.ts`,
  * но без заголовков — нам нужен только цвет/иконка.

@@ -1,16 +1,29 @@
-import { Avatar, type Role } from '@shared/ui';
+import type { CSSProperties, KeyboardEvent, MouseEvent, ReactNode } from 'react';
+import { Avatar, roleIcons, type Role } from '@shared/ui';
 import type { Participant, RunStatus, SessionSummary } from '@shared/runs/types';
-import { formatInputFromLabel, formatStartedAt, participantToRole } from '../lib/format';
+import {
+  formatInputFromLabel,
+  formatStartedAt,
+  participantToRole,
+  summarizeSessionForLink,
+} from '../lib/format';
 
 /**
- * Карточка одной встречи (#0046). Показывает участников аватарами,
- * пометку источника входа `← inputFrom`, время старта, статус и
- * однострочное превью.
+ * Карточка одной встречи (#0046 / #0047). Показывает участников аватарами,
+ * пометку источника входа `← inputFrom`, время старта, статус,
+ * однострочное превью и две строки навигации:
+ *  - `← откуда: <link>+` — по одному элементу на каждый id из `prev`;
+ *  - `→ что родилось: <link>+` — по одному на каждый id из `next`.
  *
- * Карточка — кликабельная (drill-in в чат соответствующей сессии);
- * обработчик клика приходит сверху из {@link MeetingsPanel}, чтобы
- * сама карточка не зависела от store. Это упрощает рендер в
- * Storybook (story передаёт no-op onSelect) и unit-тестирование.
+ * Карточка сама по себе кликабельна (drill-in в чат соответствующей
+ * сессии). Чтобы внутри корректно жили вложенные prev/next-кнопки, корневой
+ * элемент — `<div role="button">`, а не `<button>`: HTML запрещает
+ * вложенные интерактивные элементы внутрь `<button>`. Клавиатура
+ * (Enter/Space) обрабатывается явно — accessibility сохраняется.
+ *
+ * Все обработчики (onSelect, onNavigateLink) приходят сверху из
+ * {@link MeetingsPanel}, чтобы карточка не зависела от store. Это
+ * упрощает рендер в Storybook и unit-тестирование.
  */
 export interface MeetingCardProps {
   session: SessionSummary;
@@ -40,7 +53,44 @@ export interface MeetingCardProps {
   preview?: string;
   /** Номер карточки для дефолтного title'а («Встреча N»). */
   index: number;
+  /**
+   * Индекс «sessionId → сессия» по всем сессиям рана. Нужен для
+   * prev/next-ссылок (#0047): чтобы по id найти участников и время
+   * соседней встречи и нарисовать их без знания о store. Если id нет
+   * в индексе — сессия orphan, ссылка disabled.
+   */
+  sessionsById: ReadonlyMap<string, SessionSummary>;
+  /**
+   * Просматриваемая сейчас сессия и её первое сообщение (если уже есть
+   * в чате). Используется только для tooltip prev/next-ссылок: для
+   * остальных сессий per-session preview недоступно (Outcome #0046),
+   * tooltip ограничится одним временем.
+   */
+  viewedSessionId?: string;
+  viewedSessionFirstMessage?: string;
+  /**
+   * Подсвечена ли карточка визуальным flash'ем после клика по prev/next
+   * соседа (#0047 AC: «скроллит к соответствующей карточке + подсвечивает
+   * её на ~1.5s»). Включается родителем через таймер.
+   */
+  isFlashing: boolean;
+  /**
+   * Ref-callback на корневой элемент карточки. Родитель регистрирует
+   * его в Map<sessionId, HTMLElement>, чтобы потом вызвать
+   * `scrollIntoView` при навигации по prev/next. Используем
+   * ref-callback (а не useRef + forwardRef), потому что родителю нужен
+   * единый Map — forwardRef был бы избыточным.
+   */
+  onCardElement?: (element: HTMLDivElement | null) => void;
   onSelect: (sessionId: string) => void;
+  /**
+   * Переход по prev/next-ссылке. Сценарий другой, чем у `onSelect`:
+   * клик по prev/next НЕ открывает чат-таб, а только скроллит к
+   * соседней карточке внутри той же панели и подсвечивает её. Поэтому
+   * это отдельный коллбек: родитель решает, что значит «навигация
+   * внутри журнала».
+   */
+  onNavigateLink: (sessionId: string) => void;
 }
 
 /**
@@ -68,24 +118,77 @@ const STATUS_LABELS: Record<'active' | 'finished' | 'paused', string> = {
 };
 
 export function MeetingCard(props: MeetingCardProps) {
-  const startedLabel = formatStartedAt(props.session.createdAt, props.now);
-  const inputFromLabel = formatInputFromLabel(props.session.inputFrom);
-  const statusKind = statusKindFor(props.session.status, props.isLive);
+  // Деструктурируем все поля сразу: ESLint-плагин react-hooks/refs
+  // помечает любое поле props после `ref={props.X}` как «доступ к рефу
+  // во время рендера». С локальными переменными правило молчит, а
+  // читаемость JSX даже выше.
+  const {
+    session,
+    isActive,
+    isLive,
+    now,
+    preview,
+    index,
+    sessionsById,
+    viewedSessionId,
+    viewedSessionFirstMessage,
+    isFlashing,
+    onCardElement,
+    onSelect,
+    onNavigateLink,
+  } = props;
+  const startedLabel = formatStartedAt(session.createdAt, now);
+  const inputFromLabel = formatInputFromLabel(session.inputFrom);
+  const statusKind = statusKindFor(session.status, isLive);
   const statusText = STATUS_LABELS[statusKind];
-  const titleLabel = `Встреча ${props.index + 1}`;
-  const participants = props.session.participants ?? [];
+  const titleLabel = `Встреча ${index + 1}`;
+  const participants = session.participants ?? [];
+  const prevIds = session.prev ?? [];
+  const nextIds = session.next ?? [];
+
+  // Обработчик клика по prev/next в дочернем элементе должен погасить
+  // всплытие, иначе onClick всей карточки тоже сработает и пользователь
+  // окажется в чат-табе вместо «остался на той же панели, скроллнул к
+  // соседу» (нарушение AC #0047).
+  const handleSelect = (event: MouseEvent | KeyboardEvent) => {
+    if (event.defaultPrevented) return;
+    onSelect(session.id);
+  };
+  const handleKeyDown = (event: KeyboardEvent<HTMLDivElement>) => {
+    if (event.key !== 'Enter' && event.key !== ' ') return;
+    event.preventDefault();
+    handleSelect(event);
+  };
 
   return (
-    <button
-      type="button"
+    <div
+      ref={onCardElement}
+      role="button"
+      tabIndex={0}
       data-meeting-card
-      data-session-id={props.session.id}
+      data-session-id={session.id}
       data-meeting-status={statusKind}
-      aria-pressed={props.isActive}
-      onClick={() => props.onSelect(props.session.id)}
+      data-meeting-flash={isFlashing ? 'on' : undefined}
+      aria-pressed={isActive}
+      onClick={handleSelect}
+      onKeyDown={handleKeyDown}
+      // Flash рисуется через outline (а не border) — чтобы не сдвигать
+      // содержимое карточки при появлении/уходе подсветки. transition
+      // выставляем на сам outline-color, иначе появление подсветки
+      // выглядит резко.
+      style={
+        {
+          outlineOffset: '-1px',
+          outline: isFlashing
+            ? '2px solid var(--vscode-focusBorder, #0078d4)'
+            : '2px solid transparent',
+          transition: 'outline-color 200ms ease-out',
+        } satisfies CSSProperties
+      }
       className={
-        'w-full flex flex-col gap-1 px-2 py-1.5 text-left text-[12px] rounded-sm border transition-colors ' +
-        (props.isActive
+        'w-full flex flex-col gap-1 px-2 py-1.5 text-left text-[12px] rounded-sm border ' +
+        'cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--vscode-focusBorder)] ' +
+        (isActive
           ? 'bg-[var(--vscode-list-activeSelectionBackground)] text-[var(--vscode-list-activeSelectionForeground)] border-border'
           : 'bg-transparent text-foreground border-transparent hover:bg-[var(--vscode-list-hoverBackground)]')
       }
@@ -103,25 +206,45 @@ export function MeetingCard(props: MeetingCardProps) {
         {inputFromLabel && (
           <span
             className="text-[11px] italic text-muted truncate"
-            data-meeting-input-from={props.session.inputFrom}
+            data-meeting-input-from={session.inputFrom}
             title={inputFromLabel}
           >
             {inputFromLabel}
           </span>
         )}
       </div>
-      {props.preview ? (
+      {preview ? (
         <span
           className="text-[11px] text-muted truncate block"
           data-meeting-preview
-          title={props.preview}
+          title={preview}
         >
-          {props.preview}
+          {preview}
         </span>
       ) : (
         <span className="text-[11px] text-muted truncate block opacity-70">{titleLabel}</span>
       )}
-    </button>
+      {prevIds.length > 0 && (
+        <SessionLinkRow
+          kind="prev"
+          ids={prevIds}
+          sessionsById={sessionsById}
+          viewedSessionId={viewedSessionId}
+          viewedSessionFirstMessage={viewedSessionFirstMessage}
+          onNavigate={onNavigateLink}
+        />
+      )}
+      {nextIds.length > 0 && (
+        <SessionLinkRow
+          kind="next"
+          ids={nextIds}
+          sessionsById={sessionsById}
+          viewedSessionId={viewedSessionId}
+          viewedSessionFirstMessage={viewedSessionFirstMessage}
+          onNavigate={onNavigateLink}
+        />
+      )}
+    </div>
   );
 }
 
@@ -156,6 +279,136 @@ function ParticipantsRow(props: { participants: ReadonlyArray<Participant> }) {
         </span>
       ))}
     </span>
+  );
+}
+
+/**
+ * Строка prev/next-ссылок (#0047 AC). Подпись фиксирована («← откуда:» /
+ * «→ что родилось:»), сами ссылки — по одной на каждый id. Если ссылка
+ * указывает на orphan-сессию (нет в `sessionsById`) — рисуем как
+ * disabled с tooltip'ом «сессия не найдена», без обработчика клика.
+ *
+ * Ссылка — `<button>` (а не `<a href>`): навигация чисто внутри панели,
+ * никаких URL-ей и переходов в новые табы. Click bubbling гасим, чтобы
+ * не сработал onClick карточки (см. {@link MeetingCard}).
+ */
+interface SessionLinkRowProps {
+  kind: 'prev' | 'next';
+  ids: ReadonlyArray<string>;
+  sessionsById: ReadonlyMap<string, SessionSummary>;
+  viewedSessionId?: string;
+  viewedSessionFirstMessage?: string;
+  onNavigate: (sessionId: string) => void;
+}
+
+function SessionLinkRow(props: SessionLinkRowProps) {
+  const arrow = props.kind === 'prev' ? '←' : '→';
+  const label = props.kind === 'prev' ? 'откуда:' : 'что родилось:';
+  return (
+    <div
+      className="flex items-center gap-1 flex-wrap text-[10px] text-muted"
+      data-meeting-link-row={props.kind}
+    >
+      <span aria-hidden>{arrow}</span>
+      <span>{label}</span>
+      {props.ids.map((sessionId) => {
+        const target = props.sessionsById.get(sessionId);
+        const firstMessage =
+          target && sessionId === props.viewedSessionId
+            ? props.viewedSessionFirstMessage
+            : undefined;
+        return (
+          <SessionLink
+            key={sessionId}
+            kind={props.kind}
+            sessionId={sessionId}
+            target={target}
+            firstMessage={firstMessage}
+            onNavigate={props.onNavigate}
+          />
+        );
+      })}
+    </div>
+  );
+}
+
+interface SessionLinkProps {
+  kind: 'prev' | 'next';
+  sessionId: string;
+  target: SessionSummary | undefined;
+  firstMessage: string | undefined;
+  onNavigate: (sessionId: string) => void;
+}
+
+function SessionLink(props: SessionLinkProps) {
+  // Orphan-сессия — disabled-ссылка с фиксированным tooltip'ом «сессия
+  // не найдена». Используем `aria-disabled`, а не `disabled`, чтобы
+  // tooltip оставался читаемым на всех платформах (нативный disabled
+  // в некоторых темах гасит и title).
+  if (!props.target) {
+    return (
+      <button
+        type="button"
+        data-meeting-link={props.kind}
+        data-meeting-link-target={props.sessionId}
+        data-meeting-link-disabled="true"
+        aria-disabled="true"
+        title="сессия не найдена"
+        onClick={(event) => event.stopPropagation()}
+        className="inline-flex items-center gap-0.5 px-1 py-0.5 rounded-sm border border-dashed border-border opacity-60 cursor-not-allowed"
+      >
+        <span aria-hidden className="text-muted">
+          ?
+        </span>
+      </button>
+    );
+  }
+  const summary = summarizeSessionForLink(props.target, props.firstMessage);
+  return (
+    <button
+      type="button"
+      data-meeting-link={props.kind}
+      data-meeting-link-target={props.sessionId}
+      title={summary.tooltip}
+      aria-label={`Перейти к встрече: ${summary.tooltip}`}
+      onClick={(event) => {
+        // Клик по ссылке не должен открывать чат-таб карточки —
+        // навигация только внутри панели (см. AC #0047 / Implementation
+        // notes «Не открывать новые табы»).
+        event.stopPropagation();
+        props.onNavigate(props.sessionId);
+      }}
+      className="inline-flex items-center gap-0.5 px-1 py-0.5 rounded-sm border border-border-subtle hover:bg-[var(--vscode-list-hoverBackground)] cursor-pointer"
+    >
+      <SessionLinkIcons icons={summary.icons} />
+    </button>
+  );
+}
+
+/**
+ * Иконки участников ссылки. Без аватара-фона и без текста — карточка
+ * узкая, ссылок может быть несколько (multi-room: programmer→architect,
+ * programmer→product). Используем lucide-иконку напрямую через
+ * `roleIcons[role]`, чтобы не плодить аватарную обёртку с фоном.
+ *
+ * Если иконок нет (legacy-сессия без participants) — рисуем нейтральный
+ * placeholder «·», чтобы клик-зона ссылки оставалась видимой.
+ */
+function SessionLinkIcons(props: { icons: ReadonlyArray<Role> }): ReactNode {
+  if (props.icons.length === 0) {
+    return (
+      <span aria-hidden className="text-muted">
+        ·
+      </span>
+    );
+  }
+  return (
+    <>
+      {props.icons.map((role) => {
+        const Icon = roleIcons[role];
+        return <Icon key={role} size={10} aria-hidden data-meeting-link-icon={role} />;
+      })}
+    </>
   );
 }
 

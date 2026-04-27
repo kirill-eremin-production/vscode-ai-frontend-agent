@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { CalendarDays, ChevronLeft, ChevronRight } from 'lucide-react';
 import type { ChatMessage, RunMeta, RunStatus, SessionSummary } from '@shared/runs/types';
 import { Badge, IconButton } from '@shared/ui';
@@ -12,7 +12,7 @@ import {
 } from '@shared/runs/store';
 import type { SidePanelTab } from '@shared/runs/store';
 import { MeetingCard } from './MeetingCard';
-import { getMessagePreview, sortMeetingsByCreatedDesc } from '../lib/format';
+import { getFirstMessageText, getMessagePreview, sortMeetingsByCreatedDesc } from '../lib/format';
 
 /**
  * Панель «Встречи» — хронологический список сессий рана (#0046, AC #0029).
@@ -98,11 +98,82 @@ interface MeetingsPanelBodyProps {
   chat: ReadonlyArray<ChatMessage>;
 }
 
+/**
+ * Длительность визуальной подсветки карточки после перехода по prev/next
+ * (#0047 AC: «подсвечивает её на ~1.5s»). Вынесена константой, чтобы
+ * unit/e2e-тесты могли при необходимости импортировать (пока не нужно)
+ * и чтобы цифра не разъехалась с CSS-переходом outline'а.
+ */
+const FLASH_DURATION_MS = 1500;
+
 function MeetingsPanelBody(props: MeetingsPanelBodyProps) {
   const now = useNow(30_000);
   const meta = props.meta;
   const runId = props.runId;
   const sessions = useMemo(() => sortMeetingsByCreatedDesc(meta?.sessions ?? []), [meta?.sessions]);
+
+  // Индекс «sessionId → сессия» прокидывается в каждую карточку, чтобы
+  // SessionLinkRow без обхода массива нашёл соседа по prev/next-id.
+  // Memo по списку сессий: при появлении новой live-сессии map
+  // пересобирается, на статике остаётся той же ссылкой.
+  const sessionsById = useMemo(() => {
+    const map = new Map<string, SessionSummary>();
+    for (const session of sessions) map.set(session.id, session);
+    return map;
+  }, [sessions]);
+
+  // Регистр карточек по sessionId — нужен, чтобы по клику prev/next
+  // позвать `scrollIntoView` на нужном элементе. Используем ref-объект
+  // (а не state), потому что карта DOM-узлов не должна вызывать
+  // ре-рендер при изменении.
+  const cardElementsRef = useRef<Map<string, HTMLElement>>(new Map());
+  const setCardElement = useCallback(
+    (sessionId: string) => (element: HTMLElement | null) => {
+      if (element) {
+        cardElementsRef.current.set(sessionId, element);
+      } else {
+        cardElementsRef.current.delete(sessionId);
+      }
+    },
+    []
+  );
+
+  // Подсвеченная сессия + таймер на её снятие. Один setTimeout на
+  // всю панель: если пользователь быстро кликает по разным prev/next,
+  // предыдущий таймер сбрасывается, чтобы свежая подсветка не
+  // снялась раньше времени.
+  const [flashSessionId, setFlashSessionId] = useState<string | undefined>();
+  const flashTimerRef = useRef<number | undefined>(undefined);
+  useEffect(
+    () => () => {
+      // Чистим таймер при unmount панели — иначе если пользователь
+      // переключился с meetings на sessions сразу после клика,
+      // setFlashSessionId сработает по уже размонтированному компоненту
+      // (React выкинет warning).
+      if (flashTimerRef.current !== undefined) {
+        window.clearTimeout(flashTimerRef.current);
+        flashTimerRef.current = undefined;
+      }
+    },
+    []
+  );
+
+  const handleNavigateLink = useCallback((sessionId: string) => {
+    const element = cardElementsRef.current.get(sessionId);
+    if (!element) return;
+    // AC #0047 / Implementation notes: scroll smooth, центрируем —
+    // карточка может оказаться у самого верха или у низа, центр
+    // визуально корректнее всего показывает «куда мы пришли».
+    element.scrollIntoView({ block: 'center', behavior: 'smooth' });
+    setFlashSessionId(sessionId);
+    if (flashTimerRef.current !== undefined) {
+      window.clearTimeout(flashTimerRef.current);
+    }
+    flashTimerRef.current = window.setTimeout(() => {
+      setFlashSessionId((current) => (current === sessionId ? undefined : current));
+      flashTimerRef.current = undefined;
+    }, FLASH_DURATION_MS);
+  }, []);
 
   if (!meta || !runId) {
     return <p className="text-[11px] text-muted m-0">Выберите ран слева.</p>;
@@ -117,6 +188,10 @@ function MeetingsPanelBody(props: MeetingsPanelBodyProps) {
   const viewedSessionId = meta.activeSessionId;
 
   const previewByActive = getMessagePreview(props.chat);
+  // Первое сообщение просматриваемой сессии — для tooltip'а
+  // prev/next-ссылки (см. summarizeSessionForLink). Для остальных
+  // сессий per-session preview недоступно; tooltip ограничится временем.
+  const firstMessageByViewed = getFirstMessageText(props.chat);
 
   return (
     <ul className="list-none m-0 p-0 flex flex-col gap-1" data-testid="meetings-list">
@@ -132,7 +207,13 @@ function MeetingsPanelBody(props: MeetingsPanelBodyProps) {
             // chat живёт в store. Для остальных карточек показываем
             // нейтральный fallback (см. MeetingCard).
             preview={session.id === viewedSessionId ? previewByActive : undefined}
+            sessionsById={sessionsById}
+            viewedSessionId={viewedSessionId}
+            viewedSessionFirstMessage={firstMessageByViewed}
+            isFlashing={flashSessionId === session.id}
+            onCardElement={setCardElement(session.id)}
             onSelect={(sessionId) => drillIntoSession(runId, sessionId)}
+            onNavigateLink={handleNavigateLink}
           />
         </li>
       ))}

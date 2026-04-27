@@ -3,9 +3,11 @@ import type { SessionSummary, UsageAggregate } from '@shared/runs/types';
 import {
   formatInputFromLabel,
   formatStartedAt,
+  getFirstMessageText,
   getMessagePreview,
   participantToRole,
   sortMeetingsByCreatedDesc,
+  summarizeSessionForLink,
 } from './format';
 
 const ZERO_USAGE: UsageAggregate = {
@@ -159,6 +161,91 @@ describe('formatInputFromLabel', () => {
     // пустую пометку «← » без значения.
     expect(formatInputFromLabel(undefined)).toBeUndefined();
     expect(formatInputFromLabel('')).toBeUndefined();
+  });
+});
+
+describe('getFirstMessageText', () => {
+  it('берёт первое непустое сообщение, схлопывая whitespace', () => {
+    // tooltip prev/next-ссылки (#0047) хочет вступительную реплику —
+    // она ассоциируется с сессией сильнее, чем хвост диалога.
+    const text = getFirstMessageText([{ text: '   ' }, { text: 'Привет\n\tмир' }, { text: 'X' }]);
+    expect(text).toBe('Привет мир');
+  });
+
+  it('undefined, если все сообщения пустые', () => {
+    // Карточка по этому возврату решает, добавлять ли «· text» в
+    // tooltip ссылки или ограничиться временем.
+    expect(getFirstMessageText([{ text: '' }, { text: '   ' }])).toBeUndefined();
+  });
+
+  it('undefined для пустого списка', () => {
+    expect(getFirstMessageText([])).toBeUndefined();
+  });
+});
+
+describe('summarizeSessionForLink', () => {
+  it('собирает уникальные иконки участников и tooltip с временем + первым сообщением', () => {
+    // AC #0047: «лейбл сессии — иконки participants без имён,
+    // hover → tooltip с временем + первым сообщением». Дубли по
+    // роли подавляем, чтобы не нарисовать двух «product» подряд.
+    const session = makeSession({
+      id: 's-link',
+      createdAt: '2026-04-26T08:30:00Z',
+      participants: [
+        { kind: 'agent', role: 'product' },
+        { kind: 'agent', role: 'architect' },
+        { kind: 'agent', role: 'product' },
+      ],
+    });
+    const summary = summarizeSessionForLink(session, 'Вступительная реплика продакта');
+    expect(summary.icons).toEqual(['product', 'architect']);
+    // Время локализуем в ru-RU (HH:MM); проверяем формат и наличие
+    // первого сообщения после разделителя.
+    expect(summary.tooltip).toMatch(/^\d{2}:\d{2} · Вступительная реплика продакта$/);
+  });
+
+  it('user-участник нормализуется в роль user', () => {
+    // Avatar(role=user) рендерится через ту же палитру, что и в чате;
+    // в иконках ссылки нужна именно роль `user`, а не `system`.
+    const session = makeSession({
+      id: 's-user',
+      participants: [{ kind: 'user' }, { kind: 'agent', role: 'product' }],
+    });
+    expect(summarizeSessionForLink(session).icons).toEqual(['user', 'product']);
+  });
+
+  it('без firstMessage — tooltip = только время', () => {
+    // Per-session preview хранится только для просматриваемой сессии
+    // (см. Outcome #0046). Для остальных карточек ссылка получает
+    // `undefined` и tooltip ограничивается HH:MM, без хвоста.
+    const session = makeSession({ id: 's-no-msg', createdAt: '2026-04-26T08:30:00Z' });
+    expect(summarizeSessionForLink(session)).toMatchObject({
+      tooltip: expect.stringMatching(/^\d{2}:\d{2}$/),
+    });
+  });
+
+  it('обрезает длинное первое сообщение по кодпоинтам', () => {
+    // Длинное сообщение растянуло бы всплывашку на пол-экрана. 80
+    // кодпоинтов — компромисс между «узнаваемо» и «не уродует UI».
+    const session = makeSession({ id: 's-long', createdAt: '2026-04-26T08:30:00Z' });
+    const long = 'a'.repeat(200);
+    const summary = summarizeSessionForLink(session, long);
+    // Время + разделитель + 79 символов + многоточие.
+    expect(summary.tooltip).toMatch(/^\d{2}:\d{2} · a{79}…$/);
+  });
+
+  it('пустые participants → пустой массив иконок', () => {
+    // Legacy-сессия без participants не должна падать; ссылка её всё
+    // равно нарисует — просто без иконок.
+    const session = makeSession({ id: 's-empty', participants: [] });
+    expect(summarizeSessionForLink(session).icons).toEqual([]);
+  });
+
+  it('невалидную дату отдаёт строкой как пришла', () => {
+    // Защитная ветка зеркалит {@link formatStartedAt}: лучше показать
+    // сырой timestamp в tooltip, чем «Invalid Date».
+    const session = makeSession({ id: 's-bad', createdAt: 'not-a-date' });
+    expect(summarizeSessionForLink(session, 'msg').tooltip).toBe('not-a-date · msg');
   });
 });
 

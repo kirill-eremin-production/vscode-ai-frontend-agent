@@ -128,17 +128,31 @@ export const EmptyRun: Story = {
 };
 
 /**
- * Ран с 5 сессиями — основная сторис под AC #0046. Карточки
- * отсортированы свежие сверху; активная — `s1`; multi-room — `s4`;
- * `s5` — paused-заглушка.
+ * Ран с 5 сессиями — основная сторис под AC #0046 + AC #0047.
+ * Карточки отсортированы свежие сверху; активная — `s1`; multi-room —
+ * `s4`; `s5` — paused-заглушка. Дополнительно: s2..s4 имеют непустой
+ * `prev`, s1..s3 — `next`. Чтобы продемонстрировать orphan-disabled-
+ * ссылку без правки настоящих данных рана, в `s4.next` подставляем
+ * несуществующий `'s-orphan'`.
  */
 export const FiveSessions: Story = {
-  render: () => (
-    <Frame title="Ран с 5 сессиями (включая активную и paused-заглушку)">
-      <ul className="list-none m-0 p-0 flex flex-col gap-1">
-        {[...FIVE_SESSIONS]
-          .sort((left, right) => (left.createdAt < right.createdAt ? 1 : -1))
-          .map((session, index) => (
+  render: () => {
+    // s4 искусственно ссылается на несуществующего соседа — чтобы
+    // на сторис была видна disabled-ссылка с tooltip'ом «сессия не
+    // найдена» (#0047 AC orphan).
+    const sessionsWithOrphan: SessionSummary[] = FIVE_SESSIONS.map((session) =>
+      session.id === 's4' ? { ...session, next: ['s-orphan'] } : session
+    );
+    const sessionsById = new Map<string, SessionSummary>(
+      sessionsWithOrphan.map((session) => [session.id, session])
+    );
+    const sorted = [...sessionsWithOrphan].sort((left, right) =>
+      left.createdAt < right.createdAt ? 1 : -1
+    );
+    return (
+      <Frame title="Ран с 5 сессиями (включая активную, paused-заглушку и orphan-ссылку)">
+        <ul className="list-none m-0 p-0 flex flex-col gap-1">
+          {sorted.map((session, index) => (
             <li key={session.id}>
               <MeetingCard
                 session={session}
@@ -151,15 +165,23 @@ export const FiveSessions: Story = {
                     ? 'Программист: можно обсудить кейс с продактом, нужен общий ответ.'
                     : undefined
                 }
+                sessionsById={sessionsById}
+                viewedSessionId="s4"
+                viewedSessionFirstMessage="Программист: давайте обсудим, как разрулить этот кейс."
+                isFlashing={false}
                 onSelect={() => {
                   /* no-op в сторис: drill-in идёт через store */
+                }}
+                onNavigateLink={() => {
+                  /* no-op в сторис: scrollIntoView не имеет смысла без скролла */
                 }}
               />
             </li>
           ))}
-      </ul>
-    </Frame>
-  ),
+        </ul>
+      </Frame>
+    );
+  },
 };
 
 /**
